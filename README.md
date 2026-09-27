@@ -171,3 +171,18 @@ Images: 128x128 square, under 256 KB, PNG or WebP.
 - The container runs as a non-root user (uid 10001).
 - No ports are exposed. The bot makes only outbound connections to Discord.
 - If the token ever leaks, reset it in the Developer Portal immediately.
+
+## Discord ↔ web sync
+
+`sync/` polls the site's outbox (`GET /api/bot/outbox`), runs each job in order per
+application or raid, and acks it; it calls `POST /api/bot/tick` every minute so the site can
+generate, post, remind, lock and close raids. Clicks in Discord only call the site; what
+members see comes from the jobs the site queues. The contract is `SYNC-SPEC.md`, kept
+identical in both repos.
+
+Applications are web-only: `/recruitpanel` posts two link buttons to the site's form. Each
+web application becomes a post in the `#applications` forum with Accept / Decline; officer
+messages in the thread become private notes on the web (needs the Message Content intent).
+
+Requires the variables in the sync block of `.env.example`. Deploy after a merge with
+`docker compose up -d --build` from this folder.
