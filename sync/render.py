@@ -14,7 +14,6 @@ COLOUR_DECLINED = discord.Colour(0xB3453B)  # red
 
 PATH_LABEL = {"raider": "Raider", "social": "Social"}
 STATUS_LABEL = {"pending": "Pending", "accepted": "Accepted", "declined": "Declined"}
-ROLE_LABEL = {"tank": "Tank", "healer": "Healer", "melee": "Melee DPS", "ranged": "Ranged DPS"}
 TAG_NAMES = ("Raider", "Social", "Pending", "Accepted", "Declined")
 
 _APP_URL = re.compile(r"/officers/applications/([A-Za-z0-9]+)")
@@ -38,16 +37,13 @@ def title_for(app: dict[str, Any]) -> str:
 
 
 def embed_title(app: dict[str, Any]) -> str:
-    """Embed title: `Name · Class · Spec · Role`, trimmed to what is known."""
+    """Embed title: `Name · Class · Spec`, trimmed to what is known. (§8 lists a role too; the site's application payload carries none.)"""
     parts = [str(app.get("character", "Applicant"))]
     cls = class_label(app)
     if cls:
         parts.append(cls)
     if app.get("spec"):
         parts.append(str(app["spec"]))
-    role = app.get("raidRole")
-    if role:
-        parts.append(ROLE_LABEL.get(str(role), str(role)))
     return " · ".join(parts)[:256]
 
 

@@ -34,22 +34,6 @@ OFFICER_ROLE_NAME = "Officer"
 GUEST_ROLE = "Guest"
 MEMBER_ROLE = "Guild Member"
 
-# Must match bot.py's CLASSES / MAIN_SUFFIX so we can read an applicant's class
-# roles off the panel. Kept as its own copy — this cog doesn't import bot.py,
-# same as lfg.py keeps its own copy of the group-finder role names.
-CLASSES = [
-    "Druid",
-    "Hunter",
-    "Mage",
-    "Paladin",
-    "Priest",
-    "Rogue",
-    "Shaman",
-    "Warlock",
-    "Warrior",
-]
-MAIN_SUFFIX = " Main"
-
 APP_TYPE_LABEL = {"raider": "Raider", "social": "Social"}
 APP_TYPE_COLOR = {"raider": 0x2ECC71, "social": 0x5865F2}
 
@@ -265,5 +249,5 @@ class Recruit(commands.Cog):
 async def setup(bot: commands.Bot) -> None:
     bot.add_dynamic_items(RecruitDecisionButton)
     cog = Recruit(bot)
-    bot.add_view(ApplyView(cog))
+    # ApplyView holds link buttons only; nothing dispatches to it, so it needs no re-registration.
     await bot.add_cog(cog)

@@ -68,6 +68,8 @@ class ApplicationsCog(commands.Cog):
         self.config = config
         self._tags: dict[str, discord.ForumTag] = {}
         self._thread_app: dict[int, str] = {}
+        # Message ids the bot deleted itself, so their delete events are not reported as officer deletions.
+        self._own_deletes: set[int] = set()
         for job_type, handler in (
             ("application.post", self.job_post),
             ("application.update", self.job_update),
@@ -196,6 +198,7 @@ class ApplicationsCog(commands.Cog):
     async def job_note_delete(self, job: Job) -> None:
         found = await self._find_note(job)
         if found:
+            self._own_deletes.add(found[1].id)
             await found[1].delete()
 
     async def job_decide(self, job: Job) -> dict[str, Any]:
@@ -253,12 +256,15 @@ class ApplicationsCog(commands.Cog):
     # --- clicks --------------------------------------------------------------------
 
     async def on_decision_click(self, interaction: discord.Interaction, app_id: str, action: str) -> None:
+        # Discord wants a first answer within three seconds; the site may be slower on a cold start.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         status = "ACCEPTED" if action == "accept" else "DECLINED"
         try:
             await self.api.decide(app_id, status, interaction.user.id, reason=None, key=str(interaction.id))
         except ApiError as e:
-            return await interaction.response.send_message(e.reason, ephemeral=True)
-        await interaction.response.send_message(f"{'Accepted' if action == 'accept' else 'Declined'}. The thread updates in a moment.", ephemeral=True)
+            await interaction.followup.send(e.reason, ephemeral=True)
+            return
+        await interaction.followup.send(f"{'Accepted' if action == 'accept' else 'Declined'}. The thread updates in a moment.", ephemeral=True)
 
     # --- thread messages become notes ---------------------------------------------
 
@@ -299,6 +305,9 @@ class ApplicationsCog(commands.Cog):
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
         channel = self.bot.get_channel(payload.channel_id)
         if self._in_applications_forum(channel) is None:
+            return
+        if payload.message_id in self._own_deletes:
+            self._own_deletes.discard(payload.message_id)
             return
         try:
             await self.api.delete_note(payload.message_id)

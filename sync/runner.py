@@ -64,15 +64,23 @@ class JobRunner:
     def stop(self) -> None:
         self._stop.set()
 
+    async def shutdown(self) -> None:
+        """Stop polling and let jobs already in flight finish, so a restart loses nothing (§11)."""
+        self.stop()
+        workers = list(self._workers.values())
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+
     def dispatch(self, job: Job) -> None:
         job_id = str(job.get("id", ""))
         if not job_id or job_id in self._seen:
             return
         job_type = str(job.get("type", ""))
         if job_type in self.deferred and job_type not in self.handlers:
-            if job_id not in self._deferred_logged:
-                log.info("deferring %s %s until its handler ships", job_type, job_id)
-                self._deferred_logged.add(job_id)
+            # Left RUNNING on purpose: the site re-hands it after five minutes. Logged once per type.
+            if job_type not in self._deferred_logged:
+                log.info("deferring %s jobs until their handler ships (first: %s)", job_type, job_id)
+                self._deferred_logged.add(job_type)
             return
         self._seen.add(job_id)
         entity = str(job.get("entity") or "misc")

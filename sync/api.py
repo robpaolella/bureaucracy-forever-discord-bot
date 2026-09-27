@@ -7,6 +7,7 @@ replays the site's first answer instead of applying twice.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -101,7 +102,8 @@ class SiteApi:
         return await self.request("POST", f"/applications/{app_id}/notes", json=payload, idempotency_key=f"note:{message_id}")
 
     async def edit_note(self, message_id: int, body: str) -> JSON:
-        return await self.request("PATCH", f"/notes/by-message/{message_id}", json={"body": body}, idempotency_key=f"note-edit:{message_id}:{hash(body) & 0xFFFFFFFF}")
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+        return await self.request("PATCH", f"/notes/by-message/{message_id}", json={"body": body}, idempotency_key=f"note-edit:{message_id}:{digest}")
 
     async def delete_note(self, message_id: int) -> JSON:
         return await self.request("DELETE", f"/notes/by-message/{message_id}", idempotency_key=f"note-delete:{message_id}")

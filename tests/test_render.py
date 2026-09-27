@@ -7,7 +7,6 @@ APP = {
     "status": "pending",
     "wowClass": "priest",
     "spec": "Holy",
-    "raidRole": "healer",
     "discordName": "footnote",
     "logsUrl": "https://logs.example.com/r/1",
     "url": "https://www.bureauguild.com/officers/applications/cabc123",
@@ -18,7 +17,7 @@ APP = {
 def test_titles_and_tags():
     assert render.title_for(APP) == "Footnote — Priest (Holy) — Raider"
     assert render.title_for({**APP, "path": "social", "wowClass": None, "spec": None}) == "Footnote — Social"
-    assert render.embed_title(APP) == "Footnote · Priest · Holy · Healer"
+    assert render.embed_title(APP) == "Footnote · Priest · Holy"
     assert render.tags_for(APP) == ["Raider", "Pending"]
     assert render.tags_for({**APP, "status": "accepted"}) == ["Raider", "Accepted"]
 

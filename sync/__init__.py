@@ -42,10 +42,11 @@ class SyncCog(commands.Cog):
         self.bot.add_dynamic_items(DecisionButton)
 
     async def cog_unload(self) -> None:
-        self.runner.stop()
         self.ticker.stop()
+        await self.runner.shutdown()
         for t in self._tasks:
             t.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         await self.api.close()
 
     @commands.Cog.listener()

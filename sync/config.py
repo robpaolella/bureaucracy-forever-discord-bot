@@ -11,6 +11,16 @@ def _int(name: str) -> int:
     return int(raw) if raw.isdigit() else 0
 
 
+def _seconds(name: str, default: float) -> float:
+    """A positive number of seconds, or the default; a typo must not stop the bot starting."""
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 @dataclass(frozen=True)
 class SyncConfig:
     site_api_url: str
@@ -37,8 +47,8 @@ class SyncConfig:
             role_guild_member_id=_int("ROLE_GUILD_MEMBER_ID"),
             role_guest_id=_int("ROLE_GUEST_ID"),
             role_raider_id=_int("ROLE_RAIDER_ID"),
-            poll_seconds=float(os.environ.get("POLL_SECONDS", "5") or 5),
-            tick_seconds=float(os.environ.get("TICK_SECONDS", "60") or 60),
+            poll_seconds=_seconds("POLL_SECONDS", 5.0),
+            tick_seconds=_seconds("TICK_SECONDS", 60.0),
         )
 
     @property
