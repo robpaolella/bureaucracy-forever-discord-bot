@@ -93,6 +93,16 @@ class RaidsCog(commands.Cog):
             raise RuntimeError(f"raid {raid.get('id')} has no message yet")
         return await self.channel().fetch_message(int(message_id))
 
+    async def member_for(self, guild: discord.Guild, discord_id: Any) -> discord.Member | None:
+        """Cache first, then the API: a raider who joined since the last gateway sync is still here."""
+        member = guild.get_member(int(discord_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(discord_id))
+            except discord.HTTPException:
+                return None  # anyone who left the server is skipped (§5)
+        return member
+
     async def thread_for(self, raid: Job) -> discord.Thread | None:
         thread_id = raid.get("discord", {}).get("threadId")
         if not thread_id:
@@ -109,11 +119,23 @@ class RaidsCog(commands.Cog):
 
     async def job_post(self, job: Job) -> dict[str, Any]:
         raid = await self.api.raid(str(job["payload"]["raidId"]))
-        if raid.get("discord", {}).get("messageId"):
-            return {"threadId": str(raid["discord"].get("threadId") or raid["discord"]["messageId"]), "messageId": str(raid["discord"]["messageId"])}
+        discord_ids = raid.get("discord") or {}
+        if discord_ids.get("messageId"):
+            # Already posted (a retry after a lost ack). The message and its thread are two
+            # objects in a text channel, so a missing thread id is looked up, never guessed.
+            message = await self.message_for(raid)
+            thread_id = discord_ids.get("threadId") or (message.thread.id if message.thread else None)
+            if not thread_id:
+                thread_id = (await message.create_thread(name=render.base_title(raid), auto_archive_duration=10080)).id
+            return {"threadId": str(thread_id), "messageId": str(message.id)}
         raid["late"] = bool(job["payload"].get("late")) or bool(raid.get("late"))
         message = await self.channel().send(embed=render.raid_embed(raid), view=raid_view(str(raid["id"]), str(raid.get("url"))))
-        thread = await message.create_thread(name=render.base_title(raid), auto_archive_duration=10080)
+        try:
+            thread = await message.create_thread(name=render.base_title(raid), auto_archive_duration=10080)
+        except discord.HTTPException:
+            # The site only learns both ids together; leave nothing behind for the retry to duplicate.
+            await message.delete()
+            raise
         return {"threadId": str(thread.id), "messageId": str(message.id)}
 
     async def job_update(self, job: Job) -> None:
@@ -140,8 +162,8 @@ class RaidsCog(commands.Cog):
             raise RuntimeError("no thread to remind in")
         members = []
         for discord_id in p.get("discordIds", []):
-            member = thread.guild.get_member(int(discord_id))
-            if member is not None:  # anyone who left the server is skipped (§5)
+            member = await self.member_for(thread.guild, discord_id)
+            if member is not None:
                 members.append(member)
         if not members:
             return
@@ -150,27 +172,34 @@ class RaidsCog(commands.Cog):
         await thread.send(f"{mentions}\nThe raid is in about {hours} hours and you haven't answered yet. Accept, Tentative or Decline above, or on the web.", allowed_mentions=discord.AllowedMentions(users=members))
 
     async def job_lock(self, job: Job) -> None:
-        await self.job_update(job)
         raid = await self.api.raid(str(job["payload"]["raidId"]))
+        message = await self.message_for(raid)
+        # A job handed out again after a lost ack must not announce twice: the message
+        # already reading as locked means the first run got this far.
+        announced = bool(message.embeds) and str(message.embeds[0].title or "").startswith(render.PREFIX["LOCKED"])
+        await self.job_update(job)
         thread = await self.thread_for(raid)
-        if thread:
+        if thread and not announced:
             await thread.send("Sign-ups are locked. Officers can still change answers on the web.")
 
     async def job_cancel(self, job: Job) -> None:
         p = job["payload"]
         raid = await self.api.raid(str(p["raidId"]))
-        reason = str(p.get("reason") or "").strip() or None
+        reason = str(p.get("reason") or raid.get("cancelledReason") or "").strip() or None
         message = await self.message_for(raid)
+        # Same re-hand guard as job_lock: once the message is the compact cancelled line,
+        # the thread notice and the DMs have already gone out.
+        announced = (message.content or "").startswith("❌")
         thread = await self.thread_for(raid)
-        if thread:
+        if thread and not announced:
             if thread.archived:
                 await thread.edit(archived=False)
             await thread.send(f"This raid is cancelled{': ' + reason if reason else '.'}")
-        await message.edit(content=render.compact_line(raid, cancelled_reason=reason or "no reason given"), embed=None, view=None)
+        await message.edit(content=render.compact_line(raid, cancelled_reason=reason), embed=None, view=None)
         # DM everyone who had accepted (§5); the site lists them in the payload.
         guild = self.channel().guild
-        for discord_id in p.get("acceptedDiscordIds", []):
-            member = guild.get_member(int(discord_id))
+        for discord_id in [] if announced else p.get("acceptedDiscordIds", []):
+            member = await self.member_for(guild, discord_id)
             if member is None:
                 continue
             try:

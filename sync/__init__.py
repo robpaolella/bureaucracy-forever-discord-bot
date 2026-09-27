@@ -22,6 +22,7 @@ from .tick import TickLoop
 
 log = logging.getLogger("sync")
 
+
 class SyncCog(commands.Cog):
     """Owns the API session and the two loops; starts them once the gateway is ready."""
 

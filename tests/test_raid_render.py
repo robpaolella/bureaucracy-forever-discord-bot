@@ -50,5 +50,8 @@ def test_embed_has_six_inline_fields_timestamps_and_footer():
 def test_compact_lines_and_viewer_line():
     assert render.compact_line({**RAID, "status": "DONE", "counts": {**RAID["counts"], "attended": 38}}) == "✅ Molten Core — Thu Nov 19 · 38 attended"
     assert render.compact_line(RAID, cancelled_reason="server down") == "❌ Molten Core — Thu Nov 19 · cancelled: server down"
+    # Reconcile re-renders a cancelled raid with no payload reason; the site's field keeps it.
+    assert render.compact_line({**RAID, "status": "CANCELLED", "cancelledReason": "Not enough healers"}) == "❌ Molten Core — Thu Nov 19 · cancelled: Not enough healers"
+    assert render.compact_line({**RAID, "status": "CANCELLED"}) == "❌ Molten Core — Thu Nov 19 · cancelled: no reason given"
     assert render.viewer_line({"viewer": {"standing": "BENCH", "response": "accept"}}) == "You're set to **Accept**, on the bench."
     assert render.viewer_line({"viewer": {"standing": "ROSTER", "response": "absent"}}) == "You're set to **Decline**, on the roster."

@@ -65,6 +65,7 @@ def raid_embed(raid: dict[str, Any], now: datetime | None = None) -> discord.Emb
     locks = _unix(str(raid["locksAt"]))
     template = raid.get("template") or {}
     size = template.get("size")
+    # template.short ("MC") is for the site's calendar chips; the embed has room for the full name.
     subtitle = f"{template.get('name', base_title(raid))}" + (f" · {size}-player" if size else "") + " · full clear"
     embed = discord.Embed(title=embed_title(raid), colour=COLOURS.get(status, COLOURS["SCHEDULED"]), url=raid.get("url"))
     embed.description = "\n".join(
@@ -91,10 +92,12 @@ def raid_embed(raid: dict[str, Any], now: datetime | None = None) -> discord.Emb
 
 
 def compact_line(raid: dict[str, Any], *, cancelled_reason: str | None = None) -> str:
-    """After close or cancel the message becomes one line (§8)."""
+    """After close or cancel the message becomes one line (§8). The reason comes from the cancel
+    job's payload the first time and from the site's `cancelledReason` on every re-render after,
+    so reconcile never wipes it."""
     status = str(raid.get("status", "DONE"))
     if status == "CANCELLED" or cancelled_reason is not None:
-        reason = cancelled_reason or "no reason given"
+        reason = cancelled_reason or raid.get("cancelledReason") or "no reason given"
         return f"❌ {base_title(raid)} · cancelled: {reason}"[:2000]
     attended = int((raid.get("counts") or {}).get("attended", 0))
     return f"✅ {base_title(raid)} · {attended} attended"[:2000]
