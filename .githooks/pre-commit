@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Enforced by git itself, so it applies no matter how git was invoked —
+# a shell, an agent, an IDE, bash -c, xargs. Bypassable only with
+# --no-verify, which the Claude Code PreToolUse hook denies separately.
+set -uo pipefail
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [ "$BRANCH" = "HEAD" ] && ! git rev-parse HEAD >/dev/null 2>&1; then
+  BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+fi
+
+case "$BRANCH" in
+  main|master)
+    cat >&2 <<MSG
+
+  Commit refused: '$BRANCH' is a protected branch.
+
+  Move the work to a feature branch:
+
+      git switch -c <type>/<short-description>
+
+  See .claude/rules/git-workflow.md.
+
+MSG
+    exit 1
+    ;;
+esac
+exit 0

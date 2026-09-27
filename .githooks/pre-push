@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Enforced by git itself. Refuses pushes to protected branches, branch
+# deletions, and non-fast-forward (force) pushes.
+set -uo pipefail
+
+Z="0000000000000000000000000000000000000000"
+STATUS=0
+
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  [ -n "${REMOTE_REF:-}" ] || continue
+  SHORT="${REMOTE_REF#refs/heads/}"
+
+  case "$SHORT" in
+    main|master)
+      echo "  Push refused: '$SHORT' is protected. Open a pull request instead." >&2
+      STATUS=1
+      continue
+      ;;
+  esac
+
+  if [ "$LOCAL_SHA" = "$Z" ]; then
+    echo "  Push refused: this would delete remote branch '$SHORT'." >&2
+    STATUS=1
+    continue
+  fi
+
+  if [ "$REMOTE_SHA" != "$Z" ] && ! git merge-base --is-ancestor "$REMOTE_SHA" "$LOCAL_SHA" 2>/dev/null; then
+    echo "  Push refused: non-fast-forward (force) push to '$SHORT'." >&2
+    echo "  Push a follow-up commit instead, and squash at merge time." >&2
+    STATUS=1
+  fi
+done
+
+[ "$STATUS" -eq 0 ] || echo "  See .claude/rules/git-workflow.md." >&2
+exit "$STATUS"
