@@ -168,8 +168,10 @@ character's `rank` column mirrors `User.rank`. A user is on the roster of every 
 if `inGuild` and `rank` is `RAIDER`, `TRIAL` or `OFFICER`; a main is not required.
 
 The bot sends `POST /members/sync` with every guild member's id, display name, avatar and
-role ids each tick (`full: true`) and for one member on every role change, join or leave.
-Members missing from a full snapshot have left and get `inGuild = false`.
+role ids every `SNAPSHOT_SECONDS` (`full: true`, only from a complete member cache) and for one
+member, in order, on every roster-relevant role change, join or leave. Members missing from a full
+snapshot have left and get `inGuild = false`. Role changes the bot makes itself go out as one
+`member.edit`, so Discord reports one state, not two halves.
 
 Trials: accepting a raider application sets `rank = TRIAL`, `trialStartedAt = now`, and the
 decide job adds Guild Member, Raider and Trial and removes Guest and Social. Fourteen days
@@ -375,10 +377,11 @@ Site (Vercel): `BOT_SHARED_SECRET`, `GUILD_TZ=America/Los_Angeles`, `DISCORD_ROL
 `DISCORD_ROLE_TRIAL`, `DISCORD_ROLE_SOCIAL`, `DISCORD_ROLE_GUEST` (beside the existing
 `DISCORD_ROLE_OFFICER` and `DISCORD_ROLE_MEMBER`). Remove `BOT_WEBHOOK_URL`.
 
-Bot (server env file): `DISCORD_TOKEN`, `GUILD_ID`, `SITE_API_URL=https://www.bureauguild.com`,
+Bot (server env file): `DISCORD_TOKEN`, `GUILD_ID` (required by the sync now), `SITE_API_URL=https://www.bureauguild.com`,
 `SITE_PUBLIC_URL=https://www.bureauguild.com`, `BOT_SHARED_SECRET`, `APPLICATIONS_FORUM_ID`,
 `RAID_SIGNUPS_CHANNEL_ID`, `OFFICERS_CHANNEL_ID`, `ROLE_GUILD_MEMBER_ID`, `ROLE_GUEST_ID`,
-`ROLE_RAIDER_ID`, `ROLE_TRIAL_ID`, `ROLE_SOCIAL_ID`, `POLL_SECONDS=5`, `TICK_SECONDS=60`.
+`ROLE_RAIDER_ID`, `ROLE_TRIAL_ID`, `ROLE_SOCIAL_ID`, `ROLE_OFFICER_ID` (read only, for the snapshot),
+`POLL_SECONDS=5`, `TICK_SECONDS=60`, `SNAPSHOT_SECONDS=300`.
 
 ---
 

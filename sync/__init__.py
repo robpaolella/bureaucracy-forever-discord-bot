@@ -67,7 +67,7 @@ class SyncCog(commands.Cog):
         self._tasks = [asyncio.create_task(self.runner.run(), name="sync:outbox"), asyncio.create_task(self.ticker.run(), name="sync:tick")]
         members: MembersCog | None = self.bot.get_cog("MembersCog")  # type: ignore[assignment]
         if members is not None:
-            self._tasks.append(asyncio.create_task(members.snapshot_loop(self.config.tick_seconds), name="sync:members"))
+            self._tasks.append(asyncio.create_task(members.snapshot_loop(self.config.snapshot_seconds), name="sync:members"))
         log.info("sync running")
 
 

@@ -15,6 +15,7 @@ from discord.ext import commands
 from . import render
 from .api import ApiError, SiteApi
 from .config import SyncConfig
+from .members import roles_after_change
 from .runner import JobRunner
 
 log = logging.getLogger("sync.applications")
@@ -232,7 +233,7 @@ class ApplicationsCog(commands.Cog):
         Social out for a raider; Guild Member and Social in, Guest out for a social). Without a
         payload it falls back to Guild Member in, Guest out. Only the allowed set; never Officer."""
         guild = member.guild
-        allowed = {r for r in (self.config.role_guild_member_id, self.config.role_guest_id, self.config.role_raider_id, self.config.role_trial_id, self.config.role_social_id) if r}
+        allowed = self.config.grantable_roles
         if isinstance(roles, dict):
             add_ids = [int(r) for r in roles.get("add", []) if str(r).isdigit() and int(r) in allowed]
             remove_ids = [int(r) for r in roles.get("remove", []) if str(r).isdigit() and int(r) in allowed]
@@ -241,10 +242,8 @@ class ApplicationsCog(commands.Cog):
             remove_ids = [self.config.role_guest_id]
         add = [r for r in (guild.get_role(i) for i in add_ids) if r and r not in member.roles]
         remove = [r for r in (guild.get_role(i) for i in remove_ids) if r and r in member.roles]
-        if add:
-            await member.add_roles(*add, reason="Application accepted")
-        if remove:
-            await member.remove_roles(*remove, reason="Application accepted")
+        if add or remove:
+            await member.edit(roles=roles_after_change(member, add, remove), reason="Application accepted")
 
     async def job_reopen(self, job: Job) -> None:
         p = job["payload"]

@@ -34,6 +34,9 @@ class SyncConfig:
     role_raider_id: int
     role_trial_id: int
     role_social_id: int
+    role_officer_id: int
+    guild_id: int
+    snapshot_seconds: float
     poll_seconds: float
     tick_seconds: float
 
@@ -51,9 +54,22 @@ class SyncConfig:
             role_raider_id=_int("ROLE_RAIDER_ID"),
             role_trial_id=_int("ROLE_TRIAL_ID"),
             role_social_id=_int("ROLE_SOCIAL_ID"),
+            role_officer_id=_int("ROLE_OFFICER_ID"),
+            guild_id=_int("GUILD_ID"),
+            snapshot_seconds=_seconds("SNAPSHOT_SECONDS", 300.0),
             poll_seconds=_seconds("POLL_SECONDS", 5.0),
             tick_seconds=_seconds("TICK_SECONDS", 60.0),
         )
+
+    @property
+    def grantable_roles(self) -> set[int]:
+        """The only roles the bot ever adds or removes: Guild Member, Guest, Raider, Trial, Social. Never Officer."""
+        return {r for r in (self.role_guild_member_id, self.role_guest_id, self.role_raider_id, self.role_trial_id, self.role_social_id) if r}
+
+    @property
+    def watched_roles(self) -> set[int]:
+        """The roles the site's roster reads: the grantable ones plus Officer (read only)."""
+        return self.grantable_roles | ({self.role_officer_id} if self.role_officer_id else set())
 
     @property
     def enabled(self) -> bool:
@@ -71,6 +87,7 @@ class SyncConfig:
             ("ROLE_GUILD_MEMBER_ID", self.role_guild_member_id),
             ("ROLE_GUEST_ID", self.role_guest_id),
             ("ROLE_RAIDER_ID", self.role_raider_id),
+            ("GUILD_ID", self.guild_id),
         ):
             if not value:
                 out.append(name)
