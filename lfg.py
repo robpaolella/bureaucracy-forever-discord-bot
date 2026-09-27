@@ -353,7 +353,7 @@ class LfgButton(
         return cls(match["action"], int(match["mid"]))
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        cog: "Lfg" = interaction.client.get_cog("Lfg")  # type: ignore[assignment]
+        cog: Lfg = interaction.client.get_cog("Lfg")  # type: ignore[assignment]
         await cog.handle_button(interaction, self.action, self.mid)
 
 
@@ -421,7 +421,7 @@ class HaveSelect(discord.ui.Select):
 
 
 class SetupView(discord.ui.View):
-    def __init__(self, cog: "Lfg", dungeon: str, own_role: str, notes: str | None):
+    def __init__(self, cog: Lfg, dungeon: str, own_role: str, notes: str | None):
         super().__init__(timeout=300)
         self.cog = cog
         self.dungeon = dungeon
@@ -446,7 +446,7 @@ class SetupView(discord.ui.View):
         await interaction.response.edit_message(content="Cancelled.", view=None)
 
 
-def resolve_named(setup: "SetupView", poster_id: int) -> tuple[dict[str, list], list[str]]:
+def resolve_named(setup: SetupView, poster_id: int) -> tuple[dict[str, list], list[str]]:
     """Drop the poster and any bots silently; dedupe across roles, keeping the
     first pick and noting every one dropped for that reason."""
     named: dict[str, list] = {"tank": [], "healer": [], "dps": []}
@@ -481,7 +481,7 @@ def _join_mentions(ids: list[int]) -> str:
 # --------------------------------------------------------------------------
 
 class RemoveSelect(discord.ui.Select):
-    def __init__(self, cog: "Lfg", mid: int, rows, guild: discord.Guild):
+    def __init__(self, cog: Lfg, mid: int, rows, guild: discord.Guild):
         self.cog, self.mid = cog, mid
         opts = []
         for r in rows:
@@ -509,7 +509,7 @@ class RemoveSelect(discord.ui.Select):
 
 
 class AddSelect(discord.ui.Select):
-    def __init__(self, cog: "Lfg", mid: int, miss: dict[str, int]):
+    def __init__(self, cog: Lfg, mid: int, miss: dict[str, int]):
         self.cog, self.mid = cog, mid
         opts = [
             discord.SelectOption(label=f"Add a {ROLE_LABEL[r]}", value=r)
@@ -533,7 +533,7 @@ class AddSelect(discord.ui.Select):
 
 
 class ManageView(discord.ui.View):
-    def __init__(self, cog: "Lfg", mid: int, rows, guild: discord.Guild):
+    def __init__(self, cog: Lfg, mid: int, rows, guild: discord.Guild):
         super().__init__(timeout=180)
         self.cog, self.mid = cog, mid
         if rows:
