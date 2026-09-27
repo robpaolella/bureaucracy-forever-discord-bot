@@ -9,6 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py lfg.py recruit.py ./
+COPY sync ./sync
 
 RUN useradd --create-home --uid 10001 botuser \
     && mkdir -p /data \

@@ -513,6 +513,9 @@ class RoleBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.members = True  # required for on_member_join (privileged)
+        # Officer messages in #applications threads become notes on the web (SYNC-SPEC §8).
+        # Privileged: enable "Message Content Intent" on the bot in the developer portal.
+        intents.message_content = True
         super().__init__(command_prefix="!unused!", intents=intents)
 
     async def setup_hook(self) -> None:
@@ -520,6 +523,7 @@ class RoleBot(commands.Bot):
         self.add_dynamic_items(TriageButton)  # re-bind triage buttons after restarts
         await self.load_extension("lfg")  # /lfg command + signup buttons
         await self.load_extension("recruit")  # recruitment applications
+        await self.load_extension("sync")  # Discord ↔ web sync (SYNC-SPEC.md); no-op until configured
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
             self.tree.copy_global_to(guild=guild)

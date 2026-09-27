@@ -34,30 +34,8 @@ OFFICER_ROLE_NAME = "Officer"
 GUEST_ROLE = "Guest"
 MEMBER_ROLE = "Guild Member"
 
-# Must match bot.py's CLASSES / MAIN_SUFFIX so we can read an applicant's class
-# roles off the panel. Kept as its own copy — this cog doesn't import bot.py,
-# same as lfg.py keeps its own copy of the group-finder role names.
-CLASSES = [
-    "Druid",
-    "Hunter",
-    "Mage",
-    "Paladin",
-    "Priest",
-    "Rogue",
-    "Shaman",
-    "Warlock",
-    "Warrior",
-]
-MAIN_SUFFIX = " Main"
-
 APP_TYPE_LABEL = {"raider": "Raider", "social": "Social"}
 APP_TYPE_COLOR = {"raider": 0x2ECC71, "social": 0x5865F2}
-
-
-def _clean(value: str) -> str | None:
-    """Blank optional modal fields come back as '' — treat that as absent."""
-    value = value.strip()
-    return value or None
 
 
 # --------------------------------------------------------------------------
@@ -132,171 +110,25 @@ class Store:
 
 
 # --------------------------------------------------------------------------
-# RENDERING
-# --------------------------------------------------------------------------
-
-def class_roles_held(member: discord.Member) -> list[str]:
-    names = {r.name for r in member.roles}
-    held = []
-    for c in CLASSES:
-        if c + MAIN_SUFFIX in names:
-            held.append(c + MAIN_SUFFIX)
-        if c in names:
-            held.append(c)
-    return held
-
-
-def build_embed(
-    user: discord.Member,
-    app_type: str,
-    main_char: str,
-    alts: str,
-    logs: str | None,
-    referred_by: str | None,
-    extra: str | None,
-) -> discord.Embed:
-    label = APP_TYPE_LABEL[app_type]
-    e = discord.Embed(
-        title=f"{label} application — {user.display_name}",
-        color=APP_TYPE_COLOR[app_type],
-    )
-    e.add_field(name="Applicant", value=f"{user.mention} (`{user}`)", inline=False)
-    e.add_field(name="Main character name", value=main_char, inline=False)
-    e.add_field(name="Any level 60 alts?", value=alts, inline=False)
-    if logs:
-        e.add_field(name="Logs", value=logs, inline=False)
-    if referred_by:
-        e.add_field(name="Referred by anyone in Bureaucracy?", value=referred_by, inline=False)
-    if extra:
-        e.add_field(name="Anything else we should know?", value=extra, inline=False)
-
-    e.add_field(
-        name="Account created",
-        value=f"<t:{int(user.created_at.timestamp())}:R>",
-        inline=True,
-    )
-    if user.joined_at:
-        e.add_field(
-            name="Joined server",
-            value=f"<t:{int(user.joined_at.timestamp())}:R>",
-            inline=True,
-        )
-
-    held = class_roles_held(user)
-    e.add_field(name="Class roles", value=", ".join(held) if held else "None yet.", inline=False)
-    return e
-
-
-# --------------------------------------------------------------------------
 # APPLY BUTTONS (persistent, static — no per-user data)
 # --------------------------------------------------------------------------
 
+SITE_PUBLIC_URL = os.environ.get("SITE_PUBLIC_URL", "https://www.bureauguild.com").rstrip("/")
+
+
 class ApplyView(discord.ui.View):
-    """Lives forever on one message. custom_ids must stay stable."""
+    """Two link buttons to the site's form (SYNC-SPEC §8 #apply). Intake is web-only."""
 
-    def __init__(self, cog: Recruit):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(
-        label="Apply as a Raider",
-        style=discord.ButtonStyle.success,
-        custom_id="wf:recruit:apply:raider",
-    )
-    async def apply_raider(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.start_application(interaction, "raider")
-
-    @discord.ui.button(
-        label="Apply as Social",
-        style=discord.ButtonStyle.secondary,
-        custom_id="wf:recruit:apply:social",
-    )
-    async def apply_social(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.start_application(interaction, "social")
+        self.add_item(discord.ui.Button(label="Apply as a Raider", style=discord.ButtonStyle.link, url=f"{SITE_PUBLIC_URL}/apply?path=raider"))
+        self.add_item(discord.ui.Button(label="Apply as Social", style=discord.ButtonStyle.link, url=f"{SITE_PUBLIC_URL}/apply?path=social"))
 
 
-# --------------------------------------------------------------------------
-# APPLICATION MODALS
-# --------------------------------------------------------------------------
-
-class RaiderModal(discord.ui.Modal, title="Raider application"):
-    main_char = discord.ui.TextInput(
-        label="Main character name", style=discord.TextStyle.short,
-        required=True, max_length=100,
-    )
-    alts = discord.ui.TextInput(
-        label="Any level 60 alts?", style=discord.TextStyle.short,
-        required=True, max_length=300,
-        placeholder="Names and classes, or 'none'",
-    )
-    logs = discord.ui.TextInput(
-        label="Logs", style=discord.TextStyle.paragraph,
-        required=True, max_length=1000,
-        placeholder="WoW Forever main preferred. Alt, Classic or retail also fine.",
-    )
-    referred_by = discord.ui.TextInput(
-        label="Referred by anyone in Bureaucracy?", style=discord.TextStyle.short,
-        required=False, max_length=100,
-        placeholder="Their name, or leave blank",
-    )
-    extra = discord.ui.TextInput(
-        label="Anything else we should know?", style=discord.TextStyle.paragraph,
-        required=False, max_length=1000,
-    )
-
-    def __init__(self, cog: Recruit):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.cog.submit_application(
-            interaction, "raider",
-            main_char=self.main_char.value.strip(),
-            alts=self.alts.value.strip(),
-            logs=self.logs.value.strip(),
-            referred_by=_clean(self.referred_by.value),
-            extra=_clean(self.extra.value),
-        )
-
-
-class SocialModal(discord.ui.Modal, title="Social application"):
-    main_char = discord.ui.TextInput(
-        label="Main character name", style=discord.TextStyle.short,
-        required=True, max_length=100,
-    )
-    alts = discord.ui.TextInput(
-        label="Any level 60 alts?", style=discord.TextStyle.short,
-        required=True, max_length=300,
-        placeholder="Names and classes, or 'none'",
-    )
-    logs = discord.ui.TextInput(
-        label="Logs", style=discord.TextStyle.paragraph,
-        required=False, max_length=1000,
-        placeholder="Optional for social applicants. Paste any if you have them.",
-    )
-    referred_by = discord.ui.TextInput(
-        label="Referred by anyone in Bureaucracy?", style=discord.TextStyle.short,
-        required=False, max_length=100,
-        placeholder="Their name, or leave blank",
-    )
-    extra = discord.ui.TextInput(
-        label="Anything else we should know?", style=discord.TextStyle.paragraph,
-        required=False, max_length=1000,
-    )
-
-    def __init__(self, cog: Recruit):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.cog.submit_application(
-            interaction, "social",
-            main_char=self.main_char.value.strip(),
-            alts=self.alts.value.strip(),
-            logs=_clean(self.logs.value),
-            referred_by=_clean(self.referred_by.value),
-            extra=_clean(self.extra.value),
-        )
+APPLY_MESSAGE = (
+    "**Interested in joining Bureaucracy?** Pick the option that fits you best.\n"
+    "You'll sign in with Discord on the site, so join the server first."
+)
 
 
 # --------------------------------------------------------------------------
@@ -358,90 +190,10 @@ class Recruit(commands.Cog):
                 ephemeral=True,
             )
         await interaction.response.send_message("Posting...", ephemeral=True)
-        await interaction.channel.send(
-            "**Interested in joining Bureaucracy?** Pick the option that fits you best.",
-            view=ApplyView(self),
-        )
+        await interaction.channel.send(APPLY_MESSAGE, view=ApplyView())
         await interaction.edit_original_response(content="Panel posted.")
 
-    # ---------- apply flow ----------
-
-    async def start_application(self, interaction: discord.Interaction, app_type: str) -> None:
-        if self.store.pending_for(interaction.user.id) is not None:
-            return await interaction.response.send_message(
-                "You already have a pending application. An officer needs to decide "
-                "on it before you can apply again.",
-                ephemeral=True,
-            )
-        modal = RaiderModal(self) if app_type == "raider" else SocialModal(self)
-        await interaction.response.send_modal(modal)
-
-    async def submit_application(
-        self,
-        interaction: discord.Interaction,
-        app_type: str,
-        *,
-        main_char: str,
-        alts: str,
-        logs: str | None,
-        referred_by: str | None,
-        extra: str | None,
-    ) -> None:
-        guild = interaction.guild
-        user: discord.Member = interaction.user  # type: ignore[assignment]
-
-        app_id = self.store.create_application(
-            user_id=user.id,
-            guild_id=guild.id,
-            app_type=app_type,
-            main_char=main_char,
-            alts=alts,
-            logs=logs,
-            referred_by=referred_by,
-            extra=extra,
-            created_at=int(time.time()),
-        )
-
-        channel = self.bot.get_channel(OFFICER_REVIEW_CHANNEL_ID)
-        if channel is None:
-            log.warning("Officer review channel %s not found.", OFFICER_REVIEW_CHANNEL_ID)
-            return await interaction.response.send_message(
-                "Your application was saved, but I couldn't reach the officer review "
-                "channel — let an officer know.",
-                ephemeral=True,
-            )
-
-        officer_role = discord.utils.get(guild.roles, name=OFFICER_ROLE_NAME)
-        embed = build_embed(user, app_type, main_char, alts, logs, referred_by, extra)
-        view = discord.ui.View(timeout=None)
-        view.add_item(RecruitDecisionButton("accept", user.id))
-        view.add_item(RecruitDecisionButton("decline", user.id))
-
-        msg = await channel.send(
-            content=officer_role.mention if officer_role else f"@{OFFICER_ROLE_NAME} (role not found)",
-            embed=embed,
-            view=view,
-            allowed_mentions=discord.AllowedMentions(
-                everyone=False, users=False,
-                roles=[officer_role] if officer_role else [],
-            ),
-        )
-        self.store.set_message(app_id, msg.id)
-
-        try:
-            thread = await msg.create_thread(
-                name=f"Application — {user.display_name}"[:100],
-                auto_archive_duration=1440,
-            )
-            self.store.set_thread(app_id, thread.id)
-        except discord.HTTPException:
-            log.warning("Couldn't create thread for application %s", app_id)
-
-        await interaction.response.send_message(
-            "Your application was received. An officer will be in touch.", ephemeral=True
-        )
-
-    # ---------- officer decision ----------
+    # ---------- decisions on posts made before intake moved to the web ----------
 
     async def decide(self, interaction: discord.Interaction, action: str, uid: int) -> None:
         app = self.store.pending_for(uid)
@@ -497,5 +249,5 @@ class Recruit(commands.Cog):
 async def setup(bot: commands.Bot) -> None:
     bot.add_dynamic_items(RecruitDecisionButton)
     cog = Recruit(bot)
-    bot.add_view(ApplyView(cog))
+    # ApplyView holds link buttons only; nothing dispatches to it, so it needs no re-registration.
     await bot.add_cog(cog)

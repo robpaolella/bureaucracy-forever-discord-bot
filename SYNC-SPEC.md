@@ -1,0 +1,374 @@
+# Discord ↔ web sync — specification
+
+This file is the contract between the site (`bureaucracy-forever`, Next.js on Vercel, Neon
+Postgres) and the bot (Bureaucrat, discord.py, Docker on the Debian server). Put an
+identical copy in both repositories. When the two sides disagree, this file wins, and the
+fix is a PR to this file first.
+
+Decisions here were made by Robert and are not open for re-litigation by the implementer:
+web-only intake, rank-based rosters, outbox polling, every officer thread message becomes a
+note, auto-assign Guild Member on accept, no native Discord Events, any member may bench.
+
+---
+
+## 1. Principles
+
+1. **The Neon database is the only source of truth.** Discord displays it and accepts input
+   for it. The bot never renders from its own state; it re-renders from the site's API.
+2. **All business rules live in the site.** Who may accept, what accept does, when a raid
+   locks, who is on a roster. The bot calls endpoints; it does not decide.
+3. **Nothing inbound to the Debian server.** The bot polls the site over HTTPS. There is no
+   webhook from the site to the bot. Remove `BOT_WEBHOOK_URL` and anything built on it.
+4. **The bot is the clock.** Vercel's free cron is once per day, so the bot calls
+   `POST /api/bot/tick` every 60 seconds and the site does whatever is due.
+5. **Every synced object stores its Discord IDs** (thread, starter message, one per mirrored
+   note). Changes are edits to existing messages, never re-posts.
+6. **Every bot write is idempotent.** `Idempotency-Key` header on every POST/PATCH/DELETE,
+   set to the Discord interaction ID or message ID that caused it. The site stores keys and
+   replays the original response on a repeat.
+7. **Fail loudly, retry quietly.** A job that fails is retried with backoff up to 5 times,
+   then marked FAILED and posted to `#officers` by the bot. Nothing is silently dropped.
+
+Guild time zone is one constant, `GUILD_TZ = America/Los_Angeles`, on both sides.
+
+---
+
+## 2. Authentication
+
+- Site → nothing. The site never calls the bot.
+- Bot → site: `Authorization: Bearer <BOT_SHARED_SECRET>` on every request to `/api/bot/*`.
+  Any other route rejects that header. Compare with a constant-time function.
+- `BOT_SHARED_SECRET` is generated once (`openssl rand -base64 33`), set on Vercel and in the
+  bot's env file on the server. Never printed, never committed.
+
+---
+
+## 3. Schema changes (site, Prisma)
+
+Additive migrations only. Nothing existing is renamed.
+
+```prisma
+enum Standing   { ROSTER BENCH }
+enum RaidStatus { SCHEDULED LOCKED DONE CANCELLED }
+enum JobStatus  { PENDING RUNNING DONE FAILED }
+
+model Application {
+  // existing fields unchanged, plus:
+  source            Source    @default(WEB)   // intake is web-only; field kept for symmetry
+  discordThreadId   String?   @unique          // forum post (thread) id
+  discordMessageId  String?                    // starter message id
+  reopenedAt        DateTime?
+  nudgedAt          DateTime?                  // 24h pending nudge sent
+}
+
+model OfficerNote {
+  // existing fields unchanged, plus:
+  source            Source    @default(WEB)
+  discordMessageId  String?   @unique          // the thread message this note IS (Discord-origin)
+                                               // or the mirror the bot posted (web-origin)
+  editedAt          DateTime?
+  deletedAt         DateTime?                  // soft delete; hidden on web, deleted in Discord
+}
+
+model RaidTemplate {
+  id            String  @id @default(cuid())
+  name          String  @unique               // "Molten Core"
+  short         String                        // "MC" — for calendar chips and post titles
+  size          Int                           // 40, 20
+  durationMin   Int     @default(180)
+  requirements  Json                          // { tank, healer, melee, ranged } — sums to size
+  active        Boolean @default(true)
+  series        RaidSeries[]
+  raids         Raid[]
+}
+
+model RaidSeries {
+  id                String   @id @default(cuid())
+  templateId        String
+  template          RaidTemplate @relation(fields: [templateId], references: [id])
+  weekday           Int                        // 0 = Sunday … 6 = Saturday, in GUILD_TZ
+  startTime         String                     // "20:00", wall clock in GUILD_TZ. NOT UTC.
+  durationMin       Int
+  notes             String?
+  postAheadDays     Int      @default(14)
+  lockMinutesBefore Int      @default(120)
+  horizonWeeks      Int      @default(4)
+  active            Boolean  @default(true)
+  createdById       String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  raids             Raid[]
+}
+
+model Raid {
+  // existing fields unchanged (startsAt stays an absolute instant), plus:
+  templateId        String?
+  template          RaidTemplate? @relation(fields: [templateId], references: [id])
+  seriesId          String?
+  series            RaidSeries?   @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  detached          Boolean   @default(false)  // edited individually; series edits skip it
+  status            RaidStatus @default(SCHEDULED)
+  locksAt           DateTime
+  lockedAt          DateTime?
+  discordThreadId   String?   @unique
+  discordMessageId  String?
+  postedAt          DateTime?
+  remind72At        DateTime?                  // set when sent
+  remind24At        DateTime?
+  updatedAt         DateTime  @updatedAt       // optimistic concurrency for officer edits
+  // discordEventId stays, nullable, unused. Do not build on it.
+}
+
+model Signup {
+  // existing fields, with these changes:
+  response   Response?                          // NOW NULLABLE: on the roster, not answered yet
+  standing   Standing  @default(ROSTER)
+  attended   Boolean?                           // set by officers after the raid
+  // @@unique([raidId, userId]) stays
+}
+
+/// Work for the bot. The site writes; the bot polls, runs, acks.
+model OutboxJob {
+  id          String    @id @default(cuid())
+  type        String                            // see §5
+  payload     Json
+  status      JobStatus @default(PENDING)
+  attempts    Int       @default(0)
+  runAfter    DateTime  @default(now())         // backoff
+  lockedAt    DateTime?
+  lastError   String?
+  result      Json?                             // what the bot reported on ack
+  createdAt   DateTime  @default(now())
+  @@index([status, runAfter])
+}
+
+/// Replay protection for bot writes.
+model BotRequest {
+  key        String   @id
+  statusCode Int
+  body       Json
+  createdAt  DateTime @default(now())
+}
+```
+
+Seed `RaidTemplate` with the Classic tiers, marked `TODO: confirm` in the seed file:
+Molten Core 40 (4/12/10/14), Onyxia's Lair 40 (3/12/11/14), Blackwing Lair 40 (4/12/10/14),
+Zul'Gurub 20 (2/6/5/7), Ruins of Ahn'Qiraj 20 (2/6/5/7), Temple of Ahn'Qiraj 40 (4/12/10/14),
+Naxxramas 40 (4/12/10/14). Order is tank/healer/melee/ranged.
+
+Roster derivation: a user is on the roster of every generated raid if their main character's
+`rank` is `RAIDER`, `TRIAL` or `OFFICER`. `rank` is set on the web roster editor. Discord's
+Raider role follows it (§5 `member.roles.sync`); it is never the other way round.
+
+---
+
+## 4. Site API for the bot
+
+All under `/api/bot/`. JSON in, JSON out. 401 on bad secret. 409 on a state conflict with a
+`reason` string the bot shows verbatim to the user who clicked.
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/outbox?limit=20` | Next pending jobs whose `runAfter` has passed. Marks them RUNNING with `lockedAt`. Jobs locked > 5 min are returned again. |
+| POST | `/outbox/:id/ack` | `{ ok: true, result? }` → DONE, store result, apply it (see §5). `{ ok: false, error }` → attempts+1, PENDING with `runAfter = now + 2^attempts min`, FAILED after 5. |
+| POST | `/tick` | Runs everything due (§6). Idempotent. Returns counts of what it did. |
+| GET | `/applications/:id` | Full application + notes, for rendering. |
+| POST | `/applications/:id/decision` | `{ status: ACCEPTED\|DECLINED, byDiscordId, reason? }`. 409 if not PENDING. |
+| POST | `/applications/:id/reopen` | `{ byDiscordId }`. 409 if PENDING. |
+| POST | `/applications/:id/notes` | `{ discordMessageId, authorDiscordId, body, createdAt }`. Author must resolve to an OFFICER; otherwise 403 and the bot ignores the message. |
+| PATCH | `/notes/by-message/:discordMessageId` | `{ body }` |
+| DELETE | `/notes/by-message/:discordMessageId` | soft delete |
+| GET | `/raids/:id` | Raid + template + counts + `viewer` block when `?discordId=` is given (their standing and response). |
+| POST | `/raids/:id/respond` | `{ discordId, response: ACCEPT\|TENTATIVE\|ABSENT, reason? }`. Rules in §7. |
+| POST | `/raids/:id/bench` | `{ discordId }` — opt onto the bench. 409 if already on roster. |
+| POST | `/raids/:id/attendance` | `{ byDiscordId, attended: [discordId], absent: [discordId] }`. Officers only, after `startsAt + durationMin`. |
+| GET | `/members/:discordId` | role, rank, main character. 404 if unknown. |
+| GET | `/health` | `{ ok: true, version }` |
+
+Every write here that changes something Discord shows **also enqueues the matching
+`*.update` job**. That is how a click in Discord ends up re-rendering the embed: the bot
+posts the response, the site stores it and enqueues `raid.update`, the bot picks that up on
+its next poll and re-renders from `GET /raids/:id`. The bot must not update the embed
+directly from the click; it may reply ephemerally ("You're set to Accept") immediately.
+
+---
+
+## 5. Outbox job types
+
+`payload` always includes the entity id. The bot handles each type; unknown types are acked
+`ok: false` with `error: "unknown type"` so they surface as FAILED.
+
+| Type | Bot does | Ack `result` | Site applies result |
+|---|---|---|---|
+| `application.post` | Create forum post in `APPLICATIONS_FORUM_ID`: title `Name — Class (Spec) — Path` (Social: `Name — Social`), tags `[path, Pending]`, starter = embed of all answers + buttons Accept / Decline / Open on web (link). | `{ threadId, messageId }` | store on Application |
+| `application.update` | Re-render starter embed and tags from `GET /applications/:id`. | — | — |
+| `application.note.post` | Post `**Name** (web) · body` in the thread. | `{ messageId }` | store on OfficerNote |
+| `application.note.edit` | Edit that message. | — | — |
+| `application.note.delete` | Delete that message. | — | — |
+| `application.decide` | Post decision embed (green Accepted / red Declined, by whom, via web or Discord). Retag. DM applicant from the template in `content/dm-templates` (site serves it in the job payload). On ACCEPTED: add `ROLE_GUILD_MEMBER_ID`, remove `ROLE_GUEST_ID`. Archive + lock the thread. | `{ dmDelivered: bool }` | — |
+| `application.reopen` | Unarchive, unlock, retag Pending, post "Reopened by X". | — | — |
+| `application.nudge` | Message in `OFFICERS_CHANNEL_ID`: "Application from X has been pending 24h" + link. | — | — |
+| `raid.post` | Post one message in `RAID_SIGNUPS_CHANNEL_ID`: embed (§8) titled `🟢 Template — Ddd Mon D` (+ " · added late" when `payload.late`) + buttons Accept / Tentative / Decline / Join bench / View roster (link); open a thread on it named like the title minus the state marker. | `{ threadId, messageId }` | store on Raid |
+| `raid.update` | Re-render the embed (title prefix and colour carry the state) from `GET /raids/:id`. | — | — |
+| `raid.remind` | Thread message mentioning `payload.discordIds`. For anyone the mention can't reach (left server), skip. | — | — |
+| `raid.lock` | Re-render as 🔒 Locked, post "Sign-ups are locked. Officers can still change answers on the web." in the thread. | — | — |
+| `raid.cancel` | Edit the message to the compact ❌ line with `payload.reason`, remove buttons, DM everyone who ACCEPTed, archive the thread. | — | — |
+| `raid.close` | Edit the message to the compact ✅ line with the attended count, remove buttons, archive the thread. | — | — |
+| `member.roles.sync` | `{ discordId, add: [roleId], remove: [roleId] }`. Only ever touches Guild Member, Guest and Raider. **Never Officer** — that role grants site access and is managed by humans. | — | — |
+| `officers.notify` | Free-text message to `#officers`. Used for FAILED jobs and reconcile findings. | — | — |
+
+The `raid.post` / `raid.update` / `raid.lock` / `raid.cancel` / `raid.close` rows describe
+the forum-era mechanism; since #raid-signups became a text channel (§8) the bot posts one
+message plus a thread instead of a forum post, and state is the embed's title prefix and
+colour instead of tags. The site-facing contract is identical: payloads, the ack result
+`{ threadId, messageId }`, and what the site stores (`Raid.discordMessageId` is the channel
+message, `Raid.discordThreadId` the thread).
+
+The bot processes jobs **in order per entity** (same `applicationId`/`raidId` never in
+parallel) and up to 4 entities concurrently.
+
+---
+
+## 6. What `tick` does
+
+Runs every 60 s, called by the bot. Each step is idempotent and bounded.
+
+1. **Generate instances.** For every active series, ensure a Raid exists for each occurrence
+   from now to `horizonWeeks` ahead. Compute `startsAt` from weekday + `startTime` in
+   `GUILD_TZ` for that date (this is what keeps 8 PM at 8 PM across DST). `locksAt =
+   startsAt − lockMinutesBefore`. Create Signup rows (`standing ROSTER, response null`) for
+   every roster-derived user. Skip dates that already have a raid for the series.
+2. **Post.** Raids with `postedAt null` and `startsAt − now ≤ postAheadDays` → enqueue
+   `raid.post`, set `postedAt`.
+3. **Remind.** Raids posted, not locked, `startsAt − now ≤ 72h` and `remind72At null` →
+   enqueue `raid.remind` with the ROSTER users whose response is null; set `remind72At`.
+   Same at 24h.
+4. **Lock.** `now ≥ locksAt` and status SCHEDULED → LOCKED, `lockedAt`, enqueue `raid.lock`.
+5. **Close.** `now ≥ startsAt + durationMin + 60min` and status LOCKED → DONE, enqueue
+   `raid.close`. Attendance can still be entered afterwards.
+6. **Nudge.** Applications PENDING for > 24h with `nudgedAt null` → enqueue
+   `application.nudge`, set `nudgedAt`.
+7. **Reconcile (once per hour).** For every raid and application with a thread id and
+   status that implies archived/locked, enqueue `*.update` (the bot's update handler also
+   fixes archive/lock/tag state). Cheap insurance against drift.
+
+New roster members: when a Character's rank changes to a roster rank, `tick` step 1 also
+adds them to every SCHEDULED future raid. Rank leaving the roster removes their unanswered
+rows only; answered rows are kept.
+
+---
+
+## 7. Sign-up rules (site enforces, bot displays)
+
+- Only `MEMBER` or `OFFICER` role may respond or bench. `SOCIAL` gets 403 and the bot replies
+  "The calendar is view-only for social members."
+- A ROSTER member may set ACCEPT / TENTATIVE / ABSENT any time before `locksAt`.
+- A non-roster member pressing Accept/Tentative is placed on the BENCH with that response.
+  Pressing Decline while not on the roster does nothing ("You're not on this roster").
+- "Join bench" = BENCH + ACCEPT.
+- After lock: members get 409 "Sign-ups are locked"; officers may still change anyone via the
+  web (`setByUserId` recorded, shown as "set by X").
+- Officers may move BENCH → ROSTER and back on the web at any time before DONE.
+- Counts: composition bars count `ROSTER + ACCEPT` only. Tentative shows in counts but never
+  in the bars.
+- Every response records `source` (WEB or DISCORD). Shown on every row on the web.
+
+---
+
+## 8. Discord rendering
+
+### `#applications` (forum, visible to Officer role + bot)
+- Tags: `Raider`, `Social`, `Pending`, `Accepted`, `Declined`. Bot creates missing tags on
+  startup and caches ids.
+- Starter embed: title `Name · Class · Spec · Role`; one field per answer (long answers as
+  full-width fields); footer "Submitted on the web". Buttons: **Accept** (green), **Decline**
+  (red), **Open on web** (link). Buttons persist across restarts.
+- Accept/Decline click → `POST /applications/:id/decision` → ephemeral confirmation. 409 →
+  ephemeral with the reason. The visible changes come from the `application.decide` job.
+- **Thread messages**: on `on_message` in an application thread, if the author is not the bot
+  and the site says they're an officer, `POST /notes`. On edit/delete, PATCH/DELETE. Messages
+  from non-officers are ignored (they can't see the channel anyway). Requires the
+  **Message Content** privileged intent — enable it on the bot in the developer portal.
+- Web notes arrive as `application.note.post` and are posted by the bot as
+  `**Robert** (web) · text`. The bot ignores its own messages when ingesting.
+
+### `#raid-signups` (text channel, read-only for members, chat in threads)
+- Permissions: Guild Member — deny Send Messages, allow Send Messages in Threads,
+  allow Add Reactions off. Bot — Send Messages, Create Public Threads, Send Messages
+  in Threads, Manage Messages, Manage Threads.
+- One message per raid. tick enqueues `raid.post` in `startsAt` order, so the channel
+  reads chronologically. A raid created inside the `postAheadDays` window is posted at
+  the bottom and its embed title is suffixed " · added late" (the site marks it
+  `late: true` in the `raid.post` payload).
+- The bot opens a thread on each post named exactly like the embed title minus the
+  state marker, e.g. "Molten Core — Thu Nov 19". Reminders go in the thread.
+- State lives in the embed, not tags: title prefix 🟢 Open / 🔒 Locked / ✅ Done /
+  ❌ Cancelled, and embed colour teal / sand / green / red. Store nothing about state
+  in the message itself; always re-render from `GET /raids/:id`.
+- Embed body is unchanged from the previous spec: `<t:>` timestamps, monospace
+  composition bars, six inline fields (Accepted, Tentative, Declined, Not answered,
+  Bench, Locks at), footer "Updated <t:R> · Full roster, bench and who hasn't
+  answered are on the web". No names on the embed.
+- Buttons unchanged: **Accept** / **Tentative** / **Decline** / **Join bench** / **View
+  roster** (link). Decline opens a modal with one optional "Reason" field. Every click
+  gets an ephemeral reply stating the user's new state.
+- `raid.close` and `raid.cancel` edit the message to a single compact line
+  ("✅ Molten Core — Thu Nov 19 · 38 attended" or "❌ … · cancelled: <reason>"),
+  remove all buttons, and archive the thread. The message is not deleted.
+
+### `#apply` message
+- Replace the two component buttons with **link buttons**: `Apply as a Raider` →
+  `SITE_PUBLIC_URL/apply?path=raider`, `Apply as Social` → `SITE_PUBLIC_URL/apply?path=social`.
+  Remove the modal flow. Keep the message text; add "You'll sign in with Discord on the site,
+  so join the server first."
+
+---
+
+## 9. Site UI changes
+
+1. **`/apply`** — public route, form only. Requires Discord sign-in. On load, check guild
+   membership via the existing bot-token lookup; not a member → card with the invite instead
+   of the form. `?path=raider|social` preselects the path control. One pending application per
+   Discord ID (existing rule). Success → existing `/recruitment/submitted`. The form on
+   `/recruitment#apply` becomes two buttons that link to `/apply?path=…`.
+2. **Officer application view** — notes become a conversation: compact rows, avatar, name,
+   source badge (Discord / Web), time; composer at the bottom; "synced with #applications" in
+   the card header; link to the thread. Accept/Decline confirmation modal lists what will
+   happen (status, tag, thread closed, DM, role change, roster entry).
+3. **Templates & series (officers)** — `/officers/raids`: template table (editable), series
+   list, "New series" form (template, weekday, time in guild zone, length, notes). Editing a
+   series asks "This raid only" (detaches the instance) or "This and future raids".
+4. **Calendar** — month grid + list toggle (list is the mobile default). Chips show
+   `short · time`, a sand edge when the viewer has answered. Upcoming list beside the grid,
+   sorted with "needs your answer" first.
+5. **Raid detail** — viewer's own response control first; composition bars; roster grouped
+   by role with Answer and Via columns; Bench card with "Move to roster"; "Hasn't answered"
+   card with **Nudge in Discord** (enqueues `raid.remind`); "Answer for them" per row
+   (officers); "Mark attendance" after the raid ends; Cancel with reason (officers).
+6. **Roster editor** — rank change enqueues `member.roles.sync` for the Raider role.
+
+---
+
+## 10. Environment
+
+Site (Vercel): `BOT_SHARED_SECRET`, `GUILD_TZ=America/Los_Angeles`. Remove `BOT_WEBHOOK_URL`.
+
+Bot (server env file): `DISCORD_TOKEN`, `GUILD_ID`, `SITE_API_URL=https://www.bureauguild.com`,
+`SITE_PUBLIC_URL=https://www.bureauguild.com`, `BOT_SHARED_SECRET`, `APPLICATIONS_FORUM_ID`,
+`RAID_SIGNUPS_CHANNEL_ID`, `OFFICERS_CHANNEL_ID`, `ROLE_GUILD_MEMBER_ID`, `ROLE_GUEST_ID`,
+`ROLE_RAIDER_ID`, `POLL_SECONDS=5`, `TICK_SECONDS=60`.
+
+---
+
+## 11. Done means
+
+- An application submitted on the web appears as a forum post within 10 s. A note typed in
+  the thread shows on the web within 10 s, and a note typed on the web appears in the thread
+  within 10 s, attributed correctly. Accept on either side produces identical results on both,
+  including the role change and the DM. Reopen works from both.
+- Creating a Thursday series produces four raids with the correct `startsAt` across the
+  November DST change (8 PM stays 8 PM Pacific). The post appears 14 days out. Clicking Accept
+  in Discord updates the web within 10 s and the embed counts within 10 s. Responding on the
+  web updates the embed. Lock at T−2h, reminders at 72 h and 24 h, close after the night.
+- The bot restarted mid-way loses nothing: jobs resume, buttons still work.
+- `bash .claude/hooks/test-git-guard.sh` and both repos' test suites pass; every PR reviewed.
