@@ -156,10 +156,13 @@ async def apply_main(interaction: discord.Interaction, chosen: str) -> None:
             "class tag — drop it under **Manage alts** if you don't play one anymore."
         )
 
-    done = (
-        f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
-        f"You now have `{chosen} Main` and `{chosen}`.{note}"
-    )
+    if drop or add:
+        done = (
+            f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
+            f"You now have `{chosen} Main` and `{chosen}`.{note}"
+        )
+    else:
+        done = f"{CLASS_EMOJI.get(chosen, '')} Your main stays **{chosen}**."
     # With the site sync running, carry on to spec, role and name so the web roster gets the main.
     sync = interaction.client.get_cog("SyncCog")
     api = getattr(sync, "api", None)
@@ -175,16 +178,15 @@ async def apply_main(interaction: discord.Interaction, chosen: str) -> None:
 class MainSelect(discord.ui.Select):
     def __init__(self, member: discord.Member):
         existing = current_main(member)
-        options = [
-            discord.SelectOption(
-                label=c,
-                emoji=CLASS_EMOJI.get(c),
-                default=(c == existing),
-            )
-            for c in CLASSES
-        ]
+        # No option is pre-selected: Discord sends nothing when the pre-selected option is picked
+        # again, which left no way to keep the class and change the spec or name.
+        options = [discord.SelectOption(label=c, emoji=CLASS_EMOJI.get(c)) for c in CLASSES]
         super().__init__(
-            placeholder="Choose your main class...",
+            placeholder=(
+                f"Your main is {existing}. Pick it again to keep it..."
+                if existing
+                else "Choose your main class..."
+            ),
             min_values=1,
             max_values=1,
             options=options,
@@ -194,10 +196,28 @@ class MainSelect(discord.ui.Select):
         await apply_main(interaction, self.values[0])
 
 
+class KeepMainButton(discord.ui.Button):
+    """The one-click way to keep the class and go straight to spec, role and name."""
+
+    def __init__(self, main: str):
+        super().__init__(
+            label=f"Keep {main}",
+            style=discord.ButtonStyle.primary,
+            emoji=CLASS_EMOJI.get(main),
+        )
+        self.main = main
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await apply_main(interaction, self.main)
+
+
 class MainSelectView(discord.ui.View):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=180)
         self.add_item(MainSelect(member))
+        existing = current_main(member)
+        if existing:
+            self.add_item(KeepMainButton(existing))
 
 
 # --------------------------------------------------------------------------
@@ -348,8 +368,15 @@ class RolePanel(discord.ui.View):
                 interaction,
                 "Setup problem — these roles are missing: " + ", ".join(f"`{g}`" for g in gone),
             )
+        existing = current_main(interaction.user)
+        prompt = (
+            f"{CLASS_EMOJI.get(existing, '')} Your main is **{existing}**. Keep it to change your "
+            "spec, raid role or name, or pick a different class."
+            if existing
+            else "\U0001F5FA\uFE0F Which calling is yours? You'll get both the **Main** flag and the class tag."
+        )
         await interaction.response.send_message(
-            "\U0001F5FA\uFE0F Which calling is yours? You'll get both the **Main** flag and the class tag.",
+            prompt,
             view=MainSelectView(interaction.user),
             ephemeral=True,
         )
