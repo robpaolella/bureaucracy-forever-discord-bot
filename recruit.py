@@ -194,7 +194,7 @@ def build_embed(
 class ApplyView(discord.ui.View):
     """Lives forever on one message. custom_ids must stay stable."""
 
-    def __init__(self, cog: "Recruit"):
+    def __init__(self, cog: Recruit):
         super().__init__(timeout=None)
         self.cog = cog
 
@@ -244,7 +244,7 @@ class RaiderModal(discord.ui.Modal, title="Raider application"):
         required=False, max_length=1000,
     )
 
-    def __init__(self, cog: "Recruit"):
+    def __init__(self, cog: Recruit):
         super().__init__()
         self.cog = cog
 
@@ -284,7 +284,7 @@ class SocialModal(discord.ui.Modal, title="Social application"):
         required=False, max_length=1000,
     )
 
-    def __init__(self, cog: "Recruit"):
+    def __init__(self, cog: Recruit):
         super().__init__()
         self.cog = cog
 
@@ -333,7 +333,7 @@ class RecruitDecisionButton(
         return True
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        cog: "Recruit" = interaction.client.get_cog("Recruit")  # type: ignore[assignment]
+        cog: Recruit = interaction.client.get_cog("Recruit")  # type: ignore[assignment]
         await cog.decide(interaction, self.action, self.uid)
 
 
