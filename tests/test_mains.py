@@ -11,6 +11,7 @@ CLASSES = {
 
 def test_names_are_two_parts_of_two_to_twelve_letters_second_optional():
     assert name_ok("Red", "Tape")
+    assert name_ok(" Red ", "")
     assert name_ok("Red", "")
     assert not name_ok("R", "Tape")
     assert not name_ok("Red", "Tapeisfartoolong")
@@ -24,6 +25,11 @@ def test_class_lookup_by_label_or_key_and_role_labels():
     assert class_entry(CLASSES, "Monk") is None
     assert role_label(CLASSES, "melee") == "Melee DPS"
     assert role_label({}, "tank") == "Tank"
+
+
+def test_a_class_without_specs_still_resolves():
+    table = {"classes": [{"key": "monk", "label": "Monk", "specs": []}]}
+    assert class_entry(table, "Monk")["specs"] == []
 
 
 def test_summary_reads_like_the_roster():

@@ -4,6 +4,7 @@ the web roster. Menus come from the site's /classes so the class data has one co
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -21,14 +22,16 @@ CLASSES_TTL_S = 3600.0
 _classes_cache: tuple[float, dict[str, Any]] | None = None
 
 
-async def load_classes(api: SiteApi) -> dict[str, Any]:
-    """The site's class table, cached for an hour; it changes only with a deploy."""
+async def load_classes(api: SiteApi, *, timeout_s: float = 3.0) -> dict[str, Any]:
+    """The site's class table, cached for an hour; it changes only with a deploy. An empty or
+    odd answer is not cached, so one bad response cannot switch the flow off for an hour."""
     global _classes_cache
     now = time.monotonic()
     if _classes_cache and now - _classes_cache[0] < CLASSES_TTL_S:
         return _classes_cache[1]
-    data = await api.classes()
-    _classes_cache = (now, data)
+    data = await asyncio.wait_for(api.classes(), timeout=timeout_s)
+    if isinstance(data.get("classes"), list) and data["classes"]:
+        _classes_cache = (now, data)
     return data
 
 
@@ -55,6 +58,25 @@ def summary(classes: dict[str, Any], main: dict[str, Any]) -> str:
     return f"**{main.get('name', '?')}** — {main.get('spec', '?')} {cls.get('label', str(main.get('class', '')).title())} ({role_label(classes, str(main.get('raidRole', '')))})"
 
 
+class PickerView(discord.ui.View):
+    """An ephemeral step of the flow; after the timeout the menu is disabled instead of failing."""
+
+    def __init__(self, item: discord.ui.Item[Any]):
+        super().__init__(timeout=180)
+        self.add_item(item)
+        self.message: discord.InteractionMessage | None = None
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Select):
+                item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
 class SpecSelect(discord.ui.Select):
     def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any]):
         self.api = api
@@ -68,12 +90,15 @@ class SpecSelect(discord.ui.Select):
         if spec is None:
             return await interaction.response.edit_message(content="That spec is not on the list any more; start again.", view=None)
         roles = [str(r) for r in spec.get("roles", [])]
+        if not roles:
+            return await interaction.response.edit_message(content="The site lists no raid role for that spec; tell an officer.", view=None)
         if len(roles) > 1:
             # Feral and friends: the spec alone does not say which seat they fill.
-            view = discord.ui.View(timeout=180)
-            view.add_item(RoleSelect(self.api, self.classes, self.cls, spec, roles))
-            return await interaction.response.edit_message(content=f"**{spec['name']}** can fill more than one raid role. Which is yours?", view=view)
-        await interaction.response.send_modal(NameModal(self.api, self.classes, self.cls, spec, roles[0] if roles else "melee"))
+            view = PickerView(RoleSelect(self.api, self.classes, self.cls, spec, roles))
+            await interaction.response.edit_message(content=f"**{spec['name']}** can fill more than one raid role. Which is yours?", view=view)
+            view.message = await interaction.original_response()
+            return
+        await interaction.response.send_modal(NameModal(self.api, self.classes, self.cls, spec, roles[0]))
 
 
 class RoleSelect(discord.ui.Select):
@@ -104,20 +129,28 @@ class NameModal(discord.ui.Modal, title="Your main's name"):
         first = str(self.first.value or "").strip()
         second = str(self.second.value or "").strip()
         if not name_ok(first, second):
+            # The picker stays, so they can open the modal again.
             return await interaction.response.send_message("Names are 2 to 12 letters each, letters only.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # The modal came from the picker message; answering there replaces the picker with the result.
+        await interaction.response.defer()
         body = {"firstName": first, "secondName": second, "wowClass": self.cls.get("key"), "spec": self.spec.get("name"), "raidRole": self.role}
         try:
             result = await self.api.set_main(interaction.user.id, body, key=str(interaction.id))
         except ApiError as e:
-            await interaction.followup.send(e.reason, ephemeral=True)
+            text = "The website hasn't picked you up yet; try again in a few minutes. Your Discord class roles are set." if e.status == 404 else e.reason
+            await interaction.edit_original_response(content=text, view=None)
             return
-        await interaction.followup.send(f"Main set: {summary(self.classes, result.get('main') or {})}. The roster on the web is updated.", ephemeral=True)
+        except Exception as e:  # noqa: BLE001 — a timeout or a refused connection, not the member's doing
+            log.warning("set main for %s failed: %s", interaction.user.id, e)
+            await interaction.edit_original_response(content="Couldn't reach the website roster. Your Discord class roles are set; try Set my main again later.", view=None)
+            return
+        await interaction.edit_original_response(content=f"Main set: {summary(self.classes, result.get('main') or {})}. The roster on the web is updated.", view=None)
 
 
 async def continue_main_flow(interaction: discord.Interaction, class_label: str, api: SiteApi, done_text: str) -> bool:
-    """After the class roles: show the spec picker on the same ephemeral message. False when the
-    site cannot be reached, so the caller finishes the old way."""
+    """After the class roles: show the spec picker on the same ephemeral message. The caller has
+    deferred already, so this edits the original response. False when the site cannot be
+    reached or does not know the class, so the caller finishes the old way."""
     try:
         classes = await load_classes(api)
     except Exception as e:  # noqa: BLE001 — the class roles are already granted; the roster part can wait
@@ -125,8 +158,9 @@ async def continue_main_flow(interaction: discord.Interaction, class_label: str,
         return False
     cls = class_entry(classes, class_label)
     if cls is None:
+        log.warning("the site's class table has no %s", class_label)
         return False
-    view = discord.ui.View(timeout=180)
-    view.add_item(SpecSelect(api, classes, cls))
-    await interaction.response.edit_message(content=f"{done_text}\n\nNow the roster: which **{cls.get('label', class_label)}** spec is your main?", view=view)
+    view = PickerView(SpecSelect(api, classes, cls))
+    await interaction.edit_original_response(content=f"{done_text}\n\nNow the roster: which **{cls.get('label', class_label)}** spec is your main?", view=view)
+    view.message = await interaction.original_response()
     return True
