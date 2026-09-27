@@ -172,11 +172,19 @@ class MainSelect(discord.ui.Select):
                 "class tag — drop it under **Manage alts** if you don't play one anymore."
             )
 
-        await interaction.response.edit_message(
-            content=f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
-                    f"You now have `{chosen} Main` and `{chosen}`.{note}",
-            view=None,
+        done = (
+            f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
+            f"You now have `{chosen} Main` and `{chosen}`.{note}"
         )
+        # With the site sync running, carry on to spec, role and name so the web roster gets the main.
+        sync = interaction.client.get_cog("SyncCog")
+        api = getattr(sync, "api", None)
+        if api is not None:
+            from sync.mains import continue_main_flow
+
+            if await continue_main_flow(interaction, chosen, api, done):
+                return
+        await interaction.response.edit_message(content=done, view=None)
 
 
 class MainSelectView(discord.ui.View):
