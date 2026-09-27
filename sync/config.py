@@ -32,6 +32,8 @@ class SyncConfig:
     role_guild_member_id: int
     role_guest_id: int
     role_raider_id: int
+    role_trial_id: int
+    role_social_id: int
     poll_seconds: float
     tick_seconds: float
 
@@ -47,6 +49,8 @@ class SyncConfig:
             role_guild_member_id=_int("ROLE_GUILD_MEMBER_ID"),
             role_guest_id=_int("ROLE_GUEST_ID"),
             role_raider_id=_int("ROLE_RAIDER_ID"),
+            role_trial_id=_int("ROLE_TRIAL_ID"),
+            role_social_id=_int("ROLE_SOCIAL_ID"),
             poll_seconds=_seconds("POLL_SECONDS", 5.0),
             tick_seconds=_seconds("TICK_SECONDS", 60.0),
         )

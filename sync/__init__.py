@@ -40,6 +40,9 @@ class SyncCog(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.ticker.stop()
+        members: MembersCog | None = self.bot.get_cog("MembersCog")  # type: ignore[assignment]
+        if members is not None:
+            members.stop()
         await self.runner.shutdown()
         for t in self._tasks:
             t.cancel()
@@ -62,6 +65,9 @@ class SyncCog(commands.Cog):
             except Exception as e:  # noqa: BLE001
                 log.warning("could not prepare #applications tags: %s", e)
         self._tasks = [asyncio.create_task(self.runner.run(), name="sync:outbox"), asyncio.create_task(self.ticker.run(), name="sync:tick")]
+        members: MembersCog | None = self.bot.get_cog("MembersCog")  # type: ignore[assignment]
+        if members is not None:
+            self._tasks.append(asyncio.create_task(members.snapshot_loop(self.config.tick_seconds), name="sync:members"))
         log.info("sync running")
 
 
@@ -76,7 +82,7 @@ async def setup(bot: commands.Bot) -> None:
     core = SyncCog(bot, config)
     await bot.add_cog(core)
     await bot.add_cog(ApplicationsCog(bot, core.api, config, core.runner))
-    await bot.add_cog(MembersCog(bot, config, core.runner))
+    await bot.add_cog(MembersCog(bot, core.api, config, core.runner))
     await bot.add_cog(RaidsCog(bot, core.api, config, core.runner))
     intents: discord.Intents = bot.intents
     if not intents.message_content:
