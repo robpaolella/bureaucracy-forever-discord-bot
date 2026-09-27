@@ -1,8 +1,7 @@
 """Discord ↔ web sync (SYNC-SPEC.md). Loaded as an extension by bot.py.
 
 The site is the only source of truth; this package polls its outbox, runs the jobs it finds,
-calls its API on clicks and thread messages, and ticks its clock. Raid jobs (§5 raid.*) ship
-with Phase 5 and are deferred until then.
+calls its API on clicks and thread messages, and ticks its clock.
 """
 
 from __future__ import annotations
@@ -17,12 +16,11 @@ from .api import SiteApi
 from .applications import ApplicationsCog, DecisionButton
 from .config import SyncConfig
 from .members import MembersCog
+from .raids import RaidButton, RaidsCog
 from .runner import JobRunner
 from .tick import TickLoop
 
 log = logging.getLogger("sync")
-
-RAID_JOB_TYPES = ("raid.post", "raid.update", "raid.remind", "raid.lock", "raid.cancel", "raid.close")
 
 
 class SyncCog(commands.Cog):
@@ -33,13 +31,12 @@ class SyncCog(commands.Cog):
         self.config = config
         self.api = SiteApi(config.site_api_url, config.shared_secret)
         self.runner = JobRunner(self.api, poll_seconds=config.poll_seconds)
-        self.runner.defer(*RAID_JOB_TYPES)
         self.ticker = TickLoop(self.api, seconds=config.tick_seconds)
         self._tasks: list[asyncio.Task[None]] = []
 
     async def cog_load(self) -> None:
         await self.api.start()
-        self.bot.add_dynamic_items(DecisionButton)
+        self.bot.add_dynamic_items(DecisionButton, RaidButton)
 
     async def cog_unload(self) -> None:
         self.ticker.stop()
@@ -80,6 +77,7 @@ async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(core)
     await bot.add_cog(ApplicationsCog(bot, core.api, config, core.runner))
     await bot.add_cog(MembersCog(bot, config, core.runner))
+    await bot.add_cog(RaidsCog(bot, core.api, config, core.runner))
     intents: discord.Intents = bot.intents
     if not intents.message_content:
         log.warning("Message Content intent is off: thread messages will not become notes")
