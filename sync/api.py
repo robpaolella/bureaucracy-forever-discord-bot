@@ -123,6 +123,14 @@ class SiteApi:
     async def bench(self, raid_id: str, discord_id: int, *, key: str) -> JSON:
         return await self.request("POST", f"/raids/{raid_id}/bench", json={"discordId": str(discord_id)}, idempotency_key=key)
 
+    async def classes(self) -> JSON:
+        """GET /classes: classes, specs and the raid roles each spec fills (§4)."""
+        return await self.request("GET", "/classes")
+
+    async def set_main(self, discord_id: int, body: JSON, *, key: str) -> JSON:
+        """PUT /members/:id/main from the "Set my main" flow (§9.7)."""
+        return await self.request("PUT", f"/members/{discord_id}/main", json=body, idempotency_key=key)
+
     async def members_sync(self, members: list[JSON], *, full: bool) -> JSON:
         """POST /members/sync (§3): the guild as the bot sees it; `full` means everyone is listed."""
         return await self.request("POST", "/members/sync", json={"members": members, "full": full})

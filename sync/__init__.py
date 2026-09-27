@@ -15,6 +15,7 @@ from discord.ext import commands
 from .api import SiteApi
 from .applications import ApplicationsCog, DecisionButton
 from .config import SyncConfig
+from .mains import load_classes
 from .members import MembersCog
 from .raids import RaidButton, RaidsCog
 from .runner import JobRunner
@@ -58,6 +59,10 @@ class SyncCog(commands.Cog):
             log.info("site reachable, version %s", health.get("version"))
         except Exception as e:  # noqa: BLE001 — start anyway; the loops report each failure
             log.warning("site not reachable yet: %s", e)
+        try:
+            await load_classes(self.api)  # warm the "Set my main" menus so the first click is not the slow one
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not preload the class table: %s", e)
         apps: ApplicationsCog | None = self.bot.get_cog("ApplicationsCog")  # type: ignore[assignment]
         if apps is not None:
             try:

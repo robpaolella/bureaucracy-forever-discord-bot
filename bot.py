@@ -142,6 +142,8 @@ class MainSelect(discord.ui.Select):
         member: discord.Member = interaction.user  # type: ignore[assignment]
         guild = interaction.guild
         chosen = self.values[0]
+        # Role edits plus a call to the site can outlast Discord's three seconds; answer now, edit later.
+        await interaction.response.defer()
 
         new_main = find_role(guild, chosen + MAIN_SUFFIX)
         new_tag = find_role(guild, chosen)
@@ -172,11 +174,20 @@ class MainSelect(discord.ui.Select):
                 "class tag — drop it under **Manage alts** if you don't play one anymore."
             )
 
-        await interaction.response.edit_message(
-            content=f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
-                    f"You now have `{chosen} Main` and `{chosen}`.{note}",
-            view=None,
+        done = (
+            f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
+            f"You now have `{chosen} Main` and `{chosen}`.{note}"
         )
+        # With the site sync running, carry on to spec, role and name so the web roster gets the main.
+        sync = interaction.client.get_cog("SyncCog")
+        api = getattr(sync, "api", None)
+        if api is not None:
+            # Imported here so this file still runs when the sync extension is not configured.
+            from sync.mains import continue_main_flow
+
+            if await continue_main_flow(interaction, chosen, api, done):
+                return
+        await interaction.edit_original_response(content=done, view=None)
 
 
 class MainSelectView(discord.ui.View):
