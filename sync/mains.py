@@ -52,6 +52,31 @@ def name_ok(first: str, second: str) -> bool:
     return bool(NAME_PART.match(first.strip())) and (not second.strip() or bool(NAME_PART.match(second.strip())))
 
 
+def split_name(name: str) -> tuple[str, str]:
+    """`Red Tape` -> ("Red", "Tape"); a one-part name leaves the second blank."""
+    first, _, second = name.strip().partition(" ")
+    return first, second.strip()
+
+
+def current_main_for(member: dict[str, Any] | None, cls: dict[str, Any]) -> dict[str, Any] | None:
+    """The member's web main when it is this class, so the flow can mark and prefill it. A main of
+    another class is a different character, so nothing carries over."""
+    main = (member or {}).get("main")
+    if not isinstance(main, dict) or str(main.get("class", "")).lower() != str(cls.get("key", "")).lower():
+        return None
+    return main
+
+
+async def load_member(api: SiteApi, discord_id: int, *, timeout_s: float = 3.0) -> dict[str, Any] | None:
+    """What the site has for this member, or None when it has nothing or cannot say in time;
+    the flow still works without it, just without the current main marked."""
+    try:
+        return await asyncio.wait_for(api.member(discord_id), timeout=timeout_s)
+    except Exception as e:  # noqa: BLE001 — only the prefill is lost
+        log.warning("could not load member %s from the site: %s", discord_id, e)
+        return None
+
+
 def summary(classes: dict[str, Any], main: dict[str, Any]) -> str:
     """`Red Tape — Feral Druid (Tank)` from the site's answer."""
     cls = class_entry(classes, str(main.get("class", ""))) or {}
@@ -77,12 +102,25 @@ class PickerView(discord.ui.View):
                 pass
 
 
+def current_note(text: str, is_current: bool) -> str:
+    """An option's description, marked when it is what the member has now. Marked rather than
+    pre-selected: Discord sends nothing when a pre-selected option is picked again."""
+    if not is_current:
+        return text
+    return f"{text} · your current pick" if text else "Your current pick"
+
+
 class SpecSelect(discord.ui.Select):
-    def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any]):
+    def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any], current: dict[str, Any] | None = None):
         self.api = api
         self.classes = classes
         self.cls = cls
-        options = [discord.SelectOption(label=str(s["name"]), value=str(s["name"]), description=" or ".join(role_label(classes, r) for r in s.get("roles", []))) for s in cls.get("specs", [])]
+        self.current = current
+        now = (current or {}).get("spec")
+        options = [
+            discord.SelectOption(label=str(s["name"]), value=str(s["name"]), description=current_note(" or ".join(role_label(classes, r) for r in s.get("roles", [])), s["name"] == now))
+            for s in cls.get("specs", [])
+        ]
         super().__init__(placeholder=f"Which {cls.get('label', 'class')} spec is your main?", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -94,36 +132,43 @@ class SpecSelect(discord.ui.Select):
             return await interaction.response.edit_message(content="The site lists no raid role for that spec; tell an officer.", view=None)
         if len(roles) > 1:
             # Feral and friends: the spec alone does not say which seat they fill.
-            view = PickerView(RoleSelect(self.api, self.classes, self.cls, spec, roles))
+            view = PickerView(RoleSelect(self.api, self.classes, self.cls, spec, roles, self.current))
             await interaction.response.edit_message(content=f"**{spec['name']}** can fill more than one raid role. Which is yours?", view=view)
             view.message = await interaction.original_response()
             return
-        await interaction.response.send_modal(NameModal(self.api, self.classes, self.cls, spec, roles[0]))
+        await interaction.response.send_modal(NameModal(self.api, self.classes, self.cls, spec, roles[0], self.current))
 
 
 class RoleSelect(discord.ui.Select):
-    def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any], spec: dict[str, Any], roles: list[str]):
+    def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any], spec: dict[str, Any], roles: list[str], current: dict[str, Any] | None = None):
         self.api = api
         self.classes = classes
         self.cls = cls
         self.spec = spec
-        super().__init__(placeholder="Your raid role...", min_values=1, max_values=1, options=[discord.SelectOption(label=role_label(classes, r), value=r) for r in roles])
+        self.current = current
+        # The raid role is only "current" when the spec is too; a Feral tank who was Balance before has none.
+        now = (current or {}).get("raidRole") if (current or {}).get("spec") == spec.get("name") else None
+        options = [discord.SelectOption(label=role_label(classes, r), value=r, description=current_note("", r == now) or None) for r in roles]
+        super().__init__(placeholder="Your raid role...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(NameModal(self.api, self.classes, self.cls, self.spec, self.values[0]))
+        await interaction.response.send_modal(NameModal(self.api, self.classes, self.cls, self.spec, self.values[0], self.current))
 
 
 class NameModal(discord.ui.Modal, title="Your main's name"):
     first = discord.ui.TextInput(label="First name", placeholder="Red", min_length=2, max_length=12)
     second = discord.ui.TextInput(label="Second name", placeholder="Tape", min_length=2, max_length=12, required=False)
 
-    def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any], spec: dict[str, Any], role: str):
+    def __init__(self, api: SiteApi, classes: dict[str, Any], cls: dict[str, Any], spec: dict[str, Any], role: str, current: dict[str, Any] | None = None):
         super().__init__()
         self.api = api
         self.classes = classes
         self.cls = cls
         self.spec = spec
         self.role = role
+        if current and current.get("name"):
+            # Keeping the same character: the name is already there, so changing the spec is two clicks.
+            self.first.default, self.second.default = split_name(str(current["name"]))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         first = str(self.first.value or "").strip()
@@ -151,16 +196,23 @@ async def continue_main_flow(interaction: discord.Interaction, class_label: str,
     """After the class roles: show the spec picker on the same ephemeral message. The caller has
     deferred already, so this edits the original response. False when the site cannot be
     reached or does not know the class, so the caller finishes the old way."""
-    try:
-        classes = await load_classes(api)
-    except Exception as e:  # noqa: BLE001 — the class roles are already granted; the roster part can wait
-        log.warning("could not load classes from the site: %s", e)
+    classes_or_error, member = await asyncio.gather(load_classes(api), load_member(api, interaction.user.id), return_exceptions=True)
+    if isinstance(classes_or_error, BaseException):
+        # The class roles are already granted; the roster part can wait.
+        log.warning("could not load classes from the site: %s", classes_or_error)
         return False
+    classes = classes_or_error
     cls = class_entry(classes, class_label)
     if cls is None:
         log.warning("the site's class table has no %s", class_label)
         return False
-    view = PickerView(SpecSelect(api, classes, cls))
-    await interaction.edit_original_response(content=f"{done_text}\n\nNow the roster: which **{cls.get('label', class_label)}** spec is your main?", view=view)
+    current = current_main_for(member if isinstance(member, dict) else None, cls)
+    view = PickerView(SpecSelect(api, classes, cls, current))
+    label = cls.get("label", class_label)
+    if current:
+        ask = f"Now the roster. It has {summary(classes, current)}. Pick the same spec to keep it, or another; the name comes next."
+    else:
+        ask = f"Now the roster: which **{label}** spec is your main?"
+    await interaction.edit_original_response(content=f"{done_text}\n\n{ask}", view=view)
     view.message = await interaction.original_response()
     return True

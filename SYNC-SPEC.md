@@ -375,6 +375,11 @@ rows only; answered rows are kept.
    modal for the first and second name (WoW Forever names are two parts, 12 letters each), and
    writes the main to the web roster through `PUT /members/:discordId/main`. The Discord class
    roles are still granted as before; the web form takes the two names too.
+   A member who already has a main gets a **Keep <Class>** button beside the class menu, so the
+   same character can change spec, raid role or name. When the web main is that class, the spec
+   and raid role it has are marked "your current pick" (marked, not pre-selected: Discord sends
+   nothing when a pre-selected option is picked again) and the name modal opens filled in, from
+   `GET /members/:discordId`. That look-up is best effort; without it the flow runs unmarked.
 
 ---
 

@@ -120,80 +120,104 @@ HIERARCHY_HELP = (
 # MAIN CLASS PICKER  (ephemeral, single select)
 # --------------------------------------------------------------------------
 
+async def apply_main(interaction: discord.Interaction, chosen: str) -> None:
+    """Grant `<chosen> Main` and `<chosen>`, drop any other main flag, then carry on to the roster."""
+    member: discord.Member = interaction.user  # type: ignore[assignment]
+    guild = interaction.guild
+    # Role edits plus a call to the site can outlast Discord's three seconds; answer now, edit later.
+    await interaction.response.defer()
+
+    new_main = find_role(guild, chosen + MAIN_SUFFIX)
+    new_tag = find_role(guild, chosen)
+    if new_main is None or new_tag is None:
+        return await fail(
+            interaction,
+            f"The roles `{chosen + MAIN_SUFFIX}` and/or `{chosen}` don't exist yet. "
+            "Ask an admin to create them.",
+        )
+
+    mains = set(main_role_names())
+    drop = [r for r in member.roles if r.name in mains and r.name != new_main.name]
+    add = [r for r in (new_main, new_tag) if r not in member.roles]
+
+    try:
+        if drop:
+            await member.remove_roles(*drop, reason="Main class change")
+        if add:
+            await member.add_roles(*add, reason="Main class selection")
+    except discord.Forbidden:
+        return await fail(interaction, HIERARCHY_HELP)
+
+    note = ""
+    if drop:
+        old = drop[0].name.removesuffix(MAIN_SUFFIX)
+        note = (
+            f"\nYou're no longer flagged as a **{old} Main**. You kept the `{old}` "
+            "class tag — drop it under **Manage alts** if you don't play one anymore."
+        )
+
+    if drop or add:
+        done = (
+            f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
+            f"You now have `{chosen} Main` and `{chosen}`.{note}"
+        )
+    else:
+        done = f"{CLASS_EMOJI.get(chosen, '')} Your main stays **{chosen}**."
+    # With the site sync running, carry on to spec, role and name so the web roster gets the main.
+    sync = interaction.client.get_cog("SyncCog")
+    api = getattr(sync, "api", None)
+    if api is not None:
+        # Imported here so this file still runs when the sync extension is not configured.
+        from sync.mains import continue_main_flow
+
+        if await continue_main_flow(interaction, chosen, api, done):
+            return
+    await interaction.edit_original_response(content=done, view=None)
+
+
 class MainSelect(discord.ui.Select):
     def __init__(self, member: discord.Member):
         existing = current_main(member)
-        options = [
-            discord.SelectOption(
-                label=c,
-                emoji=CLASS_EMOJI.get(c),
-                default=(c == existing),
-            )
-            for c in CLASSES
-        ]
+        # No option is pre-selected: Discord sends nothing when the pre-selected option is picked
+        # again, which left no way to keep the class and change the spec or name.
+        options = [discord.SelectOption(label=c, emoji=CLASS_EMOJI.get(c)) for c in CLASSES]
         super().__init__(
-            placeholder="Choose your main class...",
+            placeholder=(
+                f"Your main is {existing}. Pick it again to keep it..."
+                if existing
+                else "Choose your main class..."
+            ),
             min_values=1,
             max_values=1,
             options=options,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        member: discord.Member = interaction.user  # type: ignore[assignment]
-        guild = interaction.guild
-        chosen = self.values[0]
-        # Role edits plus a call to the site can outlast Discord's three seconds; answer now, edit later.
-        await interaction.response.defer()
+        await apply_main(interaction, self.values[0])
 
-        new_main = find_role(guild, chosen + MAIN_SUFFIX)
-        new_tag = find_role(guild, chosen)
-        if new_main is None or new_tag is None:
-            return await fail(
-                interaction,
-                f"The roles `{chosen + MAIN_SUFFIX}` and/or `{chosen}` don't exist yet. "
-                "Ask an admin to create them.",
-            )
 
-        mains = set(main_role_names())
-        drop = [r for r in member.roles if r.name in mains and r.name != new_main.name]
-        add = [r for r in (new_main, new_tag) if r not in member.roles]
+class KeepMainButton(discord.ui.Button):
+    """The one-click way to keep the class and go straight to spec, role and name."""
 
-        try:
-            if drop:
-                await member.remove_roles(*drop, reason="Main class change")
-            if add:
-                await member.add_roles(*add, reason="Main class selection")
-        except discord.Forbidden:
-            return await fail(interaction, HIERARCHY_HELP)
-
-        note = ""
-        if drop:
-            old = drop[0].name.removesuffix(MAIN_SUFFIX)
-            note = (
-                f"\nYou're no longer flagged as a **{old} Main**. You kept the `{old}` "
-                "class tag — drop it under **Manage alts** if you don't play one anymore."
-            )
-
-        done = (
-            f"{CLASS_EMOJI.get(chosen, '')} Main set to **{chosen}**. "
-            f"You now have `{chosen} Main` and `{chosen}`.{note}"
+    def __init__(self, main: str):
+        super().__init__(
+            label=f"Keep {main}",
+            style=discord.ButtonStyle.primary,
+            emoji=CLASS_EMOJI.get(main),
         )
-        # With the site sync running, carry on to spec, role and name so the web roster gets the main.
-        sync = interaction.client.get_cog("SyncCog")
-        api = getattr(sync, "api", None)
-        if api is not None:
-            # Imported here so this file still runs when the sync extension is not configured.
-            from sync.mains import continue_main_flow
+        self.main = main
 
-            if await continue_main_flow(interaction, chosen, api, done):
-                return
-        await interaction.edit_original_response(content=done, view=None)
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await apply_main(interaction, self.main)
 
 
 class MainSelectView(discord.ui.View):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=180)
         self.add_item(MainSelect(member))
+        existing = current_main(member)
+        if existing:
+            self.add_item(KeepMainButton(existing))
 
 
 # --------------------------------------------------------------------------
@@ -344,8 +368,15 @@ class RolePanel(discord.ui.View):
                 interaction,
                 "Setup problem — these roles are missing: " + ", ".join(f"`{g}`" for g in gone),
             )
+        existing = current_main(interaction.user)
+        prompt = (
+            f"{CLASS_EMOJI.get(existing, '')} Your main is **{existing}**. Keep it to change your "
+            "spec, raid role or name, or pick a different class."
+            if existing
+            else "\U0001F5FA\uFE0F Which calling is yours? You'll get both the **Main** flag and the class tag."
+        )
         await interaction.response.send_message(
-            "\U0001F5FA\uFE0F Which calling is yours? You'll get both the **Main** flag and the class tag.",
+            prompt,
             view=MainSelectView(interaction.user),
             ephemeral=True,
         )
