@@ -156,9 +156,26 @@ Molten Core 40 (4/12/10/14), Onyxia's Lair 40 (3/12/11/14), Blackwing Lair 40 (4
 Zul'Gurub 20 (2/6/5/7), Ruins of Ahn'Qiraj 20 (2/6/5/7), Temple of Ahn'Qiraj 40 (4/12/10/14),
 Naxxramas 40 (4/12/10/14). Order is tank/healer/melee/ranged.
 
-Roster derivation: a user is on the roster of every generated raid if their main character's
-`rank` is `RAIDER`, `TRIAL` or `OFFICER`. `rank` is set on the web roster editor. Discord's
-Raider role follows it (§5 `member.roles.sync`); it is never the other way round.
+Roster derivation (amended 2026-09-27, Robert's decision): Discord is the source for who is
+in the guild. `User.inGuild` is true for anyone holding Guild Member or Officer; only they
+appear on the web roster, with or without a main character. `User.rank` is the roster rank
+and goes **both ways**: the Discord roles Officer > Trial > Raider set it (anyone else is
+`SOCIAL`), and a rank set on the web roster editor pushes the matching roles back through
+`member.roles.sync` (Raider for raiders and officers, Raider + Trial for trials, Social for
+socials; Officer is never touched). Whichever side wrote last wins; a snapshot arriving while
+a web-set rank still has an open `member.roles.sync` job leaves that rank alone. The main
+character's `rank` column mirrors `User.rank`. A user is on the roster of every generated raid
+if `inGuild` and `rank` is `RAIDER`, `TRIAL` or `OFFICER`; a main is not required.
+
+The bot sends `POST /members/sync` with every guild member's id, display name, avatar and
+role ids each tick (`full: true`) and for one member on every role change, join or leave.
+Members missing from a full snapshot have left and get `inGuild = false`.
+
+Trials: accepting a raider application sets `rank = TRIAL`, `trialStartedAt = now`, and the
+decide job adds Guild Member, Raider and Trial and removes Guest and Social. Fourteen days
+later tick posts once to `#officer-chat` asking whether to extend or end the trial; officers
+answer by setting Raider or Social on the roster editor. The trial DM text is a placeholder
+until Robert writes the real one.
 
 ---
 
@@ -182,7 +199,8 @@ All under `/api/bot/`. JSON in, JSON out. 401 on bad secret. 409 on a state conf
 | POST | `/raids/:id/respond` | `{ discordId, response: ACCEPT\|TENTATIVE\|ABSENT, reason? }`. Rules in §7. |
 | POST | `/raids/:id/bench` | `{ discordId }` — opt onto the bench. 409 if already on roster. |
 | POST | `/raids/:id/attendance` | `{ byDiscordId, attended: [discordId], absent: [discordId] }`. Officers only, after `startsAt + durationMin`. |
-| GET | `/members/:discordId` | role, rank, main character. 404 if unknown. |
+| GET | `/members/:discordId` | role, rank, guild membership, main character. 404 if unknown. |
+| POST | `/members/sync` | `{ members: [{ discordId, name, avatarUrl, roles }], full }`. Upserts every member's name, avatar, site role, `inGuild` and rank from their Discord roles (§3). With `full`, anyone not listed gets `inGuild = false`. Idempotent; no Idempotency-Key needed. |
 | GET | `/health` | `{ ok: true, version }` |
 
 Every write here that changes something Discord shows **also enqueues the matching
@@ -205,7 +223,7 @@ directly from the click; it may reply ephemerally ("You're set to Accept") immed
 | `application.note.post` | Post `**Name** (web) · body` in the thread. | `{ messageId }` | store on OfficerNote |
 | `application.note.edit` | Edit that message. | — | — |
 | `application.note.delete` | Delete that message. | — | — |
-| `application.decide` | Post decision embed (green Accepted / red Declined, by whom, via web or Discord). Retag. DM applicant from the template in `content/dm-templates` (site serves it in the job payload). On ACCEPTED: add `ROLE_GUILD_MEMBER_ID`, remove `ROLE_GUEST_ID`. Archive + lock the thread. | `{ dmDelivered: bool }` | — |
+| `application.decide` | Post decision embed (green Accepted / red Declined, by whom, via web or Discord). Retag. DM applicant from the template in `content/dm-templates` (site serves it in the job payload). On ACCEPTED: apply `payload.roles` (`{ add, remove }`, computed by the site: Guild Member, Raider and Trial in, Guest and Social out for the raider path; Guild Member and Social in, Guest out for social). Archive + lock the thread. | `{ dmDelivered: bool }` | — |
 | `application.reopen` | Unarchive, unlock, retag Pending, post "Reopened by X". | — | — |
 | `application.nudge` | Message in `OFFICERS_CHANNEL_ID`: "Application from X has been pending 24h" + link. | — | — |
 | `raid.post` | Post one message in `RAID_SIGNUPS_CHANNEL_ID`: embed (§8) titled `🟢 Template — Ddd Mon D` (+ " · added late" when `payload.late`) + buttons Accept / Tentative / Decline / Join bench / View roster (link); open a thread on it named like the title minus the state marker. | `{ threadId, messageId }` | store on Raid |
@@ -214,7 +232,7 @@ directly from the click; it may reply ephemerally ("You're set to Accept") immed
 | `raid.lock` | Re-render as 🔒 Locked, post "Sign-ups are locked. Officers can still change answers on the web." in the thread. | — | — |
 | `raid.cancel` | Edit the message to the compact ❌ line with `payload.reason`, remove buttons, DM everyone who ACCEPTed, archive the thread. | — | — |
 | `raid.close` | Edit the message to the compact ✅ line with the attended count, remove buttons, archive the thread. | — | — |
-| `member.roles.sync` | `{ discordId, add: [roleId], remove: [roleId] }`. Only ever touches Guild Member, Guest and Raider. **Never Officer** — that role grants site access and is managed by humans. | — | — |
+| `member.roles.sync` | `{ discordId, add: [roleId], remove: [roleId] }`. Only ever touches Guild Member, Guest, Raider, Trial and Social. **Never Officer** — that role grants site access and is managed by humans. | — | — |
 | `officers.notify` | Free-text message to `#officers`. Used for FAILED jobs and reconcile findings. | — | — |
 
 The `raid.post` / `raid.update` / `raid.lock` / `raid.cancel` / `raid.close` rows describe
@@ -345,18 +363,22 @@ rows only; answered rows are kept.
    by role with Answer and Via columns; Bench card with "Move to roster"; "Hasn't answered"
    card with **Nudge in Discord** (enqueues `raid.remind`); "Answer for them" per row
    (officers); "Mark attendance" after the raid ends; Cancel with reason (officers).
-6. **Roster editor** — rank change enqueues `member.roles.sync` for the Raider role.
+6. **Roster editor** — lists everyone in the guild on Discord; a rank change (on a main, or the
+   rank select on a member without one) enqueues `member.roles.sync` for the Raider, Trial and
+   Social roles. Officer rank is read-only, it comes from the Discord Officer role.
 
 ---
 
 ## 10. Environment
 
-Site (Vercel): `BOT_SHARED_SECRET`, `GUILD_TZ=America/Los_Angeles`. Remove `BOT_WEBHOOK_URL`.
+Site (Vercel): `BOT_SHARED_SECRET`, `GUILD_TZ=America/Los_Angeles`, `DISCORD_ROLE_RAIDER`,
+`DISCORD_ROLE_TRIAL`, `DISCORD_ROLE_SOCIAL`, `DISCORD_ROLE_GUEST` (beside the existing
+`DISCORD_ROLE_OFFICER` and `DISCORD_ROLE_MEMBER`). Remove `BOT_WEBHOOK_URL`.
 
 Bot (server env file): `DISCORD_TOKEN`, `GUILD_ID`, `SITE_API_URL=https://www.bureauguild.com`,
 `SITE_PUBLIC_URL=https://www.bureauguild.com`, `BOT_SHARED_SECRET`, `APPLICATIONS_FORUM_ID`,
 `RAID_SIGNUPS_CHANNEL_ID`, `OFFICERS_CHANNEL_ID`, `ROLE_GUILD_MEMBER_ID`, `ROLE_GUEST_ID`,
-`ROLE_RAIDER_ID`, `POLL_SECONDS=5`, `TICK_SECONDS=60`.
+`ROLE_RAIDER_ID`, `ROLE_TRIAL_ID`, `ROLE_SOCIAL_ID`, `POLL_SECONDS=5`, `TICK_SECONDS=60`.
 
 ---
 
