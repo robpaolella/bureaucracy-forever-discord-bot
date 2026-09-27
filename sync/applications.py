@@ -15,6 +15,7 @@ from discord.ext import commands
 from . import render
 from .api import ApiError, SiteApi
 from .config import SyncConfig
+from .members import roles_after_change
 from .runner import JobRunner
 
 log = logging.getLogger("sync.applications")
@@ -218,7 +219,7 @@ class ApplicationsCog(commands.Cog):
                 member = None
         if member is not None:
             if p.get("status") == "accepted":
-                await self.grant_member_roles(member)
+                await self.grant_member_roles(member, p.get("roles"))
             try:
                 await member.send(str(p.get("dm") or ""))
                 dm_delivered = True
@@ -227,15 +228,22 @@ class ApplicationsCog(commands.Cog):
         await self.job_update(job)
         return {"dmDelivered": dm_delivered}
 
-    async def grant_member_roles(self, member: discord.Member) -> None:
-        """On accept: add Guild Member, remove Guest (§5). Never touches Officer."""
+    async def grant_member_roles(self, member: discord.Member, roles: Any = None) -> None:
+        """On accept (§5): the site names the roles (Guild Member, Raider and Trial in, Guest and
+        Social out for a raider; Guild Member and Social in, Guest out for a social). Without a
+        payload it falls back to Guild Member in, Guest out. Only the allowed set; never Officer."""
         guild = member.guild
-        add = guild.get_role(self.config.role_guild_member_id)
-        remove = guild.get_role(self.config.role_guest_id)
-        if add and add not in member.roles:
-            await member.add_roles(add, reason="Application accepted")
-        if remove and remove in member.roles:
-            await member.remove_roles(remove, reason="Application accepted")
+        allowed = self.config.grantable_roles
+        if isinstance(roles, dict):
+            add_ids = [int(r) for r in roles.get("add", []) if str(r).isdigit() and int(r) in allowed]
+            remove_ids = [int(r) for r in roles.get("remove", []) if str(r).isdigit() and int(r) in allowed]
+        else:
+            add_ids = [self.config.role_guild_member_id]
+            remove_ids = [self.config.role_guest_id]
+        add = [r for r in (guild.get_role(i) for i in add_ids) if r and r not in member.roles]
+        remove = [r for r in (guild.get_role(i) for i in remove_ids) if r and r in member.roles]
+        if add or remove:
+            await member.edit(roles=roles_after_change(member, add, remove), reason="Application accepted")
 
     async def job_reopen(self, job: Job) -> None:
         p = job["payload"]
