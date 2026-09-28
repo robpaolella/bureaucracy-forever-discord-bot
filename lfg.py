@@ -205,6 +205,23 @@ class Store:
         )
         self.db.commit()
 
+    def set_role(self, mid: int, uid: int, role: str) -> None:
+        """Change a signup's role in place, keeping its place in the roster order."""
+        self.db.execute(
+            "UPDATE signups SET role=? WHERE message_id=? AND user_id=?", (role, mid, uid)
+        )
+        self.db.commit()
+
+    def active_signups(self, uid: int, exclude_mid: int) -> list[sqlite3.Row]:
+        """The user's signups in other groups that are still running (open or filled)."""
+        return self.db.execute(
+            "SELECT p.message_id, p.dungeon, p.owner_id, s.role FROM signups s"
+            " JOIN posts p ON p.message_id = s.message_id"
+            " WHERE s.user_id=? AND s.message_id<>? AND p.status IN ('open','filled')"
+            " ORDER BY p.created_at",
+            (uid, exclude_mid),
+        ).fetchall()
+
     def remove_signup(self, mid: int, uid: int) -> bool:
         cur = self.db.execute(
             "DELETE FROM signups WHERE message_id=? AND user_id=?", (mid, uid)
@@ -259,6 +276,22 @@ def counts(rows) -> dict[str, int]:
 def missing(rows) -> dict[str, int]:
     have = counts(rows)
     return {k: max(0, ROLE_SLOTS[k] - have.get(k, 0)) for k in ROLE_SLOTS}
+
+
+def signup_plan(rows, uid: int, role: str) -> tuple[str, str | None]:
+    """What a click on "Sign up as <role>" means for this user, and their current role.
+
+    same: already in as that role · change: in as another role, that slot is open
+    full: that slot is taken · join: not in the group, slot open
+    """
+    current = next((r["role"] for r in rows if r["user_id"] == uid), None)
+    if current == role:
+        return "same", current
+    # Moving out of your own slot frees it, so only other people count against the target.
+    others = [r for r in rows if r["user_id"] != uid]
+    if missing(others)[role] <= 0:
+        return "full", current
+    return ("change" if current else "join"), current
 
 
 def needs_phrase(guild: discord.Guild, miss: dict[str, int]) -> str:
@@ -530,6 +563,55 @@ class AddSelect(discord.ui.Select):
             self.mid, f"A **{ROLE_LABEL[role]}** slot was filled in game."
         )
         await interaction.response.edit_message(content="Roster updated.", view=None)
+
+
+class InGroupView(discord.ui.View):
+    """Private reply to someone already in the group who clicked a role button."""
+
+    def __init__(self, cog: Lfg, mid: int, role: str | None):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.mid = mid
+        self.role = role
+        if role is None:
+            self.remove_item(self.change)
+        else:
+            self.change.label = f"Change role to {ROLE_LABEL[role]}"
+
+    @discord.ui.button(label="Change role", style=discord.ButtonStyle.success)
+    async def change(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.cog.change_role(interaction, self.mid, self.role)
+
+    @discord.ui.button(label="Leave group", style=discord.ButtonStyle.danger)
+    async def leave(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.cog.leave(interaction, self.mid, edit=True)
+
+
+class SwitchGroupView(discord.ui.View):
+    """Confirm before moving someone out of their other running group(s) into this one."""
+
+    def __init__(self, cog: Lfg, mid: int, role: str):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.mid = mid
+        self.role = role
+
+    @discord.ui.button(label="Switch to this group", style=discord.ButtonStyle.success)
+    async def switch(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.cog.join(interaction, self.mid, self.role, edit=True, leave_others=True)
+
+    @discord.ui.button(label="Stay where I am", style=discord.ButtonStyle.secondary)
+    async def stay(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.cog.reply(interaction, "No change. You're still in your other group.", edit=True)
+
+
+def other_groups_phrase(others) -> str:
+    """Name the other groups, e.g. **Deadmines** (Healer) and **Stockades** (DPS, you lead it)."""
+    parts = [
+        f"**{o['dungeon']}** ({ROLE_LABEL[o['role']]}{', you lead it' if o['leads'] else ''})"
+        for o in others
+    ]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
 
 
 class ManageView(discord.ui.View):
@@ -823,39 +905,119 @@ class Lfg(commands.Cog):
                 ephemeral=True,
             )
 
-        rows = self.store.signups(mid)
-        uid = interaction.user.id
-
         if action == "leave":
-            if not self.store.remove_signup(mid, uid):
-                return await interaction.response.send_message(
-                    "You're not signed up for this one.", ephemeral=True
-                )
-            await interaction.response.send_message("You're off the list.", ephemeral=True)
-            await self.refresh(interaction.guild, mid)
-            return await self.say_in_thread(
-                mid, f"<@{uid}> has unlisted themselves from this group."
-            )
+            return await self.leave(interaction, mid, edit=False)
 
         # signing up for a role
-        if any(r["user_id"] == uid for r in rows):
+        plan, current = signup_plan(self.store.signups(mid), interaction.user.id, action)
+        if plan == "same":
             return await interaction.response.send_message(
-                "You're already in this group. Use **Leave** first to switch roles.",
+                f"You're already in this group as **{ROLE_LABEL[action]}**.",
+                view=InGroupView(self, mid, None),
                 ephemeral=True,
             )
-        if missing(rows)[action] <= 0:
+        if plan == "full":
+            if current:
+                return await interaction.response.send_message(
+                    f"You're in this group as **{ROLE_LABEL[current]}**. The "
+                    f"{ROLE_LABEL[action]} slots are full, so you can't switch to it.",
+                    view=InGroupView(self, mid, None),
+                    ephemeral=True,
+                )
             return await interaction.response.send_message(
                 f"The {ROLE_LABEL[action]} slots just filled up.", ephemeral=True
             )
+        if plan == "change":
+            return await interaction.response.send_message(
+                f"You're in this group as **{ROLE_LABEL[current]}**.",
+                view=InGroupView(self, mid, action),
+                ephemeral=True,
+            )
 
-        self.store.add_signup(mid, uid, action)
-        await interaction.response.send_message(
-            f"You're in as **{ROLE_LABEL[action]}**.", ephemeral=True
-        )
+        others = self.others(interaction.user.id, mid)
+        if others:
+            here = self.store.post(mid)["dungeon"]
+            return await interaction.response.send_message(
+                f"You're signed up for {other_groups_phrase(others)}. Signing up for "
+                f"**{here}** as **{ROLE_LABEL[action]}** takes you out of "
+                f"{'that group' if len(others) == 1 else 'those groups'}.",
+                view=SwitchGroupView(self, mid, action),
+                ephemeral=True,
+            )
+        await self.join(interaction, mid, action, edit=False, leave_others=False)
+
+    def others(self, uid: int, mid: int) -> list[dict]:
+        return [
+            {**dict(o), "leads": o["owner_id"] == uid}
+            for o in self.store.active_signups(uid, mid)
+        ]
+
+    async def reply(self, interaction: discord.Interaction, text: str, *, edit: bool) -> None:
+        """Answer a public button with a new private message, or a private view in place."""
+        if edit:
+            await interaction.response.edit_message(content=text, view=None)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+
+    def still_open(self, mid: int) -> bool:
+        post = self.store.post(mid)
+        return post is not None and post["status"] == "open"
+
+    async def leave(self, interaction: discord.Interaction, mid: int, *, edit: bool) -> None:
+        if edit and not self.still_open(mid):
+            return await self.reply(interaction, "This group is closed.", edit=True)
+        uid = interaction.user.id
+        if not self.store.remove_signup(mid, uid):
+            return await self.reply(interaction, "You're not signed up for this one.", edit=edit)
+        await self.reply(interaction, "You're off the list.", edit=edit)
+        await self.refresh(interaction.guild, mid)
+        await self.say_in_thread(mid, f"<@{uid}> has unlisted themselves from this group.")
+
+    async def change_role(self, interaction: discord.Interaction, mid: int, role: str) -> None:
+        # The private view can be clicked minutes later: check again.
+        if not self.still_open(mid):
+            return await self.reply(interaction, "This group is closed.", edit=True)
+        uid = interaction.user.id
+        plan, current = signup_plan(self.store.signups(mid), uid, role)
+        if plan == "same":
+            return await self.reply(interaction, f"You're already in as **{ROLE_LABEL[role]}**.", edit=True)
+        if plan != "change":
+            text = (f"The {ROLE_LABEL[role]} slots filled up in the meantime." if current
+                    else "You're no longer in this group. Pick a role on the post to join.")
+            return await self.reply(interaction, text, edit=True)
+        self.store.set_role(mid, uid, role)
+        await self.reply(interaction, f"You're now in as **{ROLE_LABEL[role]}**.", edit=True)
         await self.refresh(interaction.guild, mid)
         await self.say_in_thread(
-            mid, f"<@{uid}> has signed up as **{ROLE_LABEL[action]}** for this group."
+            mid, f"<@{uid}> switched from **{ROLE_LABEL[current]}** to **{ROLE_LABEL[role]}**."
         )
+
+    async def join(self, interaction: discord.Interaction, mid: int, role: str, *, edit: bool, leave_others: bool) -> None:
+        uid = interaction.user.id
+        if not self.still_open(mid):
+            return await self.reply(interaction, "This group is closed.", edit=edit)
+        plan, _ = signup_plan(self.store.signups(mid), uid, role)
+        if plan != "join":
+            text = ("You're already in this group." if plan in ("same", "change")
+                    else f"The {ROLE_LABEL[role]} slots just filled up.")
+            return await self.reply(interaction, text, edit=edit)
+        # Re-read at confirm time: the member may have joined or left groups since the prompt.
+        others = self.others(uid, mid) if leave_others else []
+        self.store.add_signup(mid, uid, role)
+        here = self.store.post(mid)["dungeon"]
+        for o in others:
+            self.store.remove_signup(o["message_id"], uid)
+        left = f" You've left {other_groups_phrase(others)}." if others else ""
+        await self.reply(interaction, f"You're in as **{ROLE_LABEL[role]}**.{left}", edit=edit)
+        await self.refresh(interaction.guild, mid)
+        await self.say_in_thread(
+            mid, f"<@{uid}> has signed up as **{ROLE_LABEL[role]}** for this group."
+        )
+        for o in others:
+            await self.refresh(interaction.guild, o["message_id"])
+            await self.say_in_thread(
+                o["message_id"], f"<@{uid}> left this group to join a **{here}** group."
+            )
 
     # ---------- closing ----------
 
