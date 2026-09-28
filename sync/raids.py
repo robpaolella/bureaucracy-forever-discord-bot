@@ -229,15 +229,21 @@ class RaidsCog(commands.Cog):
             except discord.NotFound:
                 pass  # already gone: a retry after a lost ack
             except discord.Forbidden:
-                # Without Manage Threads the thread cannot go; closing it is the next best thing.
+                # Without Manage Threads the thread cannot go (nor be locked); the bot started
+                # it, so it may still archive it.
                 log.warning("raid %s: cannot delete thread %s, archiving it", p.get("raidId"), thread.id)
-                await thread.edit(archived=True, locked=True)
+                try:
+                    await thread.edit(archived=True)
+                except discord.HTTPException:
+                    log.warning("raid %s: cannot archive thread %s either", p.get("raidId"), thread.id)
         message_id = p.get("messageId")
         if message_id:
             try:
                 await self.channel().get_partial_message(int(message_id)).delete()
             except discord.NotFound:
                 pass
+            except discord.Forbidden:
+                log.warning("raid %s: cannot delete message %s", p.get("raidId"), message_id)
 
     # --- clicks --------------------------------------------------------------------
 

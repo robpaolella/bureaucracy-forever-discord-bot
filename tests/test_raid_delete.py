@@ -42,14 +42,24 @@ def test_delete_treats_missing_objects_as_done():
     asyncio.run(cog.job_delete({"payload": {"raidId": "r1", "threadId": "11", "messageId": "22"}}))
 
 
-def test_delete_archives_and_locks_a_thread_it_may_not_delete():
+def test_delete_archives_a_thread_it_may_not_delete():
     thread = MagicMock(spec=discord.Thread)
     thread.delete = AsyncMock(side_effect=_http_error(discord.Forbidden))
     thread.edit = AsyncMock()
     message = SimpleNamespace(delete=AsyncMock())
     cog, _ = _cog(thread, message)
     asyncio.run(cog.job_delete({"payload": {"raidId": "r1", "threadId": "11", "messageId": "22"}}))
-    thread.edit.assert_awaited_once_with(archived=True, locked=True)
+    thread.edit.assert_awaited_once_with(archived=True)
+    message.delete.assert_awaited_once()
+
+
+def test_delete_still_removes_the_message_when_the_thread_cannot_be_touched():
+    thread = MagicMock(spec=discord.Thread)
+    thread.delete = AsyncMock(side_effect=_http_error(discord.Forbidden))
+    thread.edit = AsyncMock(side_effect=_http_error(discord.Forbidden))
+    message = SimpleNamespace(delete=AsyncMock())
+    cog, _ = _cog(thread, message)
+    asyncio.run(cog.job_delete({"payload": {"raidId": "r1", "threadId": "11", "messageId": "22"}}))
     message.delete.assert_awaited_once()
 
 
