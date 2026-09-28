@@ -602,7 +602,7 @@ class SwitchGroupView(discord.ui.View):
 
     @discord.ui.button(label="Stay where I am", style=discord.ButtonStyle.secondary)
     async def stay(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.edit_message(content="No change. You're still in your other group.", view=None)
+        await self.cog.reply(interaction, "No change. You're still in your other group.", edit=True)
 
 
 def other_groups_phrase(others) -> str:
@@ -1001,15 +1001,13 @@ class Lfg(commands.Cog):
             text = ("You're already in this group." if plan in ("same", "change")
                     else f"The {ROLE_LABEL[role]} slots just filled up.")
             return await self.reply(interaction, text, edit=edit)
-        others = self.others(uid, mid)
-        if others and not leave_others:
-            # Joined another group while the confirmation was pending elsewhere: ask again.
-            return await self.reply(interaction, "Your groups changed. Click the role button again.", edit=edit)
+        # Re-read at confirm time: the member may have joined or left groups since the prompt.
+        others = self.others(uid, mid) if leave_others else []
         self.store.add_signup(mid, uid, role)
         here = self.store.post(mid)["dungeon"]
         for o in others:
             self.store.remove_signup(o["message_id"], uid)
-        left = f" You're off {other_groups_phrase(others)}." if others else ""
+        left = f" You've left {other_groups_phrase(others)}." if others else ""
         await self.reply(interaction, f"You're in as **{ROLE_LABEL[role]}**.{left}", edit=edit)
         await self.refresh(interaction.guild, mid)
         await self.say_in_thread(

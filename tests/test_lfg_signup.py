@@ -76,3 +76,111 @@ def test_private_views_offer_change_and_leave_or_switch_and_stay():
     assert change == ["Change role to Tank", "Leave group"]
     assert stay == ["Leave group"]
     assert switch == ["Switch to this group", "Stay where I am"]
+
+
+# --- the cog's flows, with a real store and a fake interaction -------------------------
+
+class _Response:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, content, *, view=None, ephemeral=False):
+        self.sent.append(("send", content, view))
+
+    async def edit_message(self, *, content, view=None):
+        self.sent.append(("edit", content, view))
+
+
+def _interaction(uid):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(user=SimpleNamespace(id=uid), guild=None, response=_Response())
+
+
+def _cog(tmp_path):
+    from lfg import Lfg
+
+    cog = Lfg.__new__(Lfg)  # skip __init__: no bot, no expiry loop
+    cog.store = _store(tmp_path)
+    cog.thread_notes = []
+
+    async def refresh(guild, mid):
+        return None
+
+    async def say(mid, text):
+        cog.thread_notes.append((mid, text))
+
+    cog.refresh = refresh
+    cog.say_in_thread = say
+    return cog
+
+
+def test_role_button_while_in_the_group_offers_change_then_changes_in_place(tmp_path):
+    cog = _cog(tmp_path)
+    cog.store.add_signup(1, 9, "healer")
+    i = _interaction(9)
+    asyncio.run(cog.handle_button(i, "dps", 1))
+    kind, text, view = i.response.sent[0]
+    assert "in this group as **Healer**" in text and isinstance(view, InGroupView)
+    asyncio.run(cog.change_role(_interaction(9), 1, "dps"))
+    assert [(r["user_id"], r["role"]) for r in cog.store.signups(1)] == [(9, "dps")]
+    assert cog.thread_notes == [(1, "<@9> switched from **Healer** to **DPS**.")]
+
+
+def test_late_change_role_click_after_the_slot_filled_or_the_group_closed(tmp_path):
+    cog = _cog(tmp_path)
+    cog.store.add_signup(1, 9, "healer")
+    cog.store.add_signup(1, 5, "tank")
+    i = _interaction(9)
+    asyncio.run(cog.change_role(i, 1, "tank"))
+    assert "filled up in the meantime" in i.response.sent[0][1]
+    cog.store.set_status(1, "cancelled")
+    i = _interaction(9)
+    asyncio.run(cog.change_role(i, 1, "dps"))
+    assert i.response.sent[0][1] == "This group is closed."
+    assert [(r["user_id"], r["role"]) for r in cog.store.signups(1)] == [(9, "healer"), (5, "tank")]
+
+
+def test_signing_up_while_in_another_running_group_asks_first(tmp_path):
+    cog = _cog(tmp_path)
+    cog.store.add_signup(2, 9, "tank")  # Stockades, filled, and 9 leads it
+    i = _interaction(9)
+    asyncio.run(cog.handle_button(i, "healer", 1))
+    kind, text, view = i.response.sent[0]
+    assert isinstance(view, SwitchGroupView)
+    assert "**Stockades** (Tank, you lead it)" in text and "takes you out of that group" in text
+    assert cog.store.signups(1) == []  # nothing moved yet
+
+
+def test_confirming_the_switch_moves_the_member_and_tells_both_threads(tmp_path):
+    cog = _cog(tmp_path)
+    cog.store.add_signup(2, 9, "tank")
+    i = _interaction(9)
+    asyncio.run(cog.join(i, 1, "healer", edit=True, leave_others=True))
+    assert i.response.sent[0][1] == "You're in as **Healer**. You've left **Stockades** (Tank, you lead it)."
+    assert [r["user_id"] for r in cog.store.signups(1)] == [9]
+    assert cog.store.signups(2) == []
+    assert cog.thread_notes == [(1, "<@9> has signed up as **Healer** for this group."), (2, "<@9> left this group to join a **Deadmines** group.")]
+
+
+def test_late_switch_confirm_after_the_group_closed_or_the_slot_filled(tmp_path):
+    cog = _cog(tmp_path)
+    cog.store.add_signup(2, 9, "tank")
+    cog.store.add_signup(1, 5, "healer")
+    i = _interaction(9)
+    asyncio.run(cog.join(i, 1, "healer", edit=True, leave_others=True))
+    assert i.response.sent[0][1] == "The Healer slots just filled up."
+    cog.store.set_status(1, "expired")
+    i = _interaction(9)
+    asyncio.run(cog.join(i, 1, "dps", edit=True, leave_others=True))
+    assert i.response.sent[0][1] == "This group is closed."
+    assert [r["user_id"] for r in cog.store.signups(2)] == [9]  # still in the other group
+
+
+def test_a_closed_other_group_does_not_trigger_the_question(tmp_path):
+    cog = _cog(tmp_path)
+    cog.store.add_signup(3, 9, "dps")  # Wailing Caverns, cancelled
+    i = _interaction(9)
+    asyncio.run(cog.handle_button(i, "dps", 1))
+    assert i.response.sent[0][1] == "You're in as **DPS**."
+    assert [r["user_id"] for r in cog.store.signups(3)] == [9]
