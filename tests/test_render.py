@@ -10,7 +10,7 @@ APP = {
     "discordName": "footnote",
     "logsUrl": "https://logs.example.com/r/1",
     "url": "https://www.bureauguild.com/officers/applications/cabc123",
-    "answers": [{"key": "availability", "label": "Can you make the nights?", "answer": "Both nights"}, {"key": "wipe", "label": "A wipe", "answer": "x" * 80}],
+    "answers": [{"key": "availability", "label": "Can you make the nights?", "answer": "Both nights"}, {"key": "pitch", "label": "Why you'd be a good addition to our team", "answer": "x" * 80}],
 }
 
 
@@ -26,8 +26,8 @@ def test_embed_fields_and_footer():
     e = render.application_embed(APP, "https://www.bureauguild.com")
     names = [f.name for f in e.fields]
     assert names[:4] == ["Discord", "Path", "Status", "Logs"]
-    assert "Can you make the nights?" in names and "A wipe" in names
-    long_field = next(f for f in e.fields if f.name == "A wipe")
+    assert "Can you make the nights?" in names and "Why you'd be a good addition to our team" in names
+    long_field = next(f for f in e.fields if f.name == "Why you'd be a good addition to our team")
     assert long_field.inline is False
     assert e.footer.text == "Submitted on the web"
     assert e.colour == render.COLOUR_PENDING
