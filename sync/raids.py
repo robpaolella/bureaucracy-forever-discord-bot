@@ -76,6 +76,7 @@ class RaidsCog(commands.Cog):
             ("raid.lock", self.job_lock),
             ("raid.cancel", self.job_cancel),
             ("raid.close", self.job_close),
+            ("raid.delete", self.job_delete),
         ):
             runner.handle(job_type, handler)
 
@@ -216,6 +217,33 @@ class RaidsCog(commands.Cog):
         thread = await self.thread_for(raid)
         if thread and not thread.archived:
             await thread.edit(archived=True)
+
+    async def job_delete(self, job: Job) -> None:
+        """The raid is gone from the site, so the payload carries the Discord ids and nothing
+        is fetched. Quiet by design: no thread notice, no DMs (cancel is the loud path)."""
+        p = job["payload"]
+        thread = await self.thread_for({"discord": {"threadId": p.get("threadId")}})
+        if thread is not None:
+            try:
+                await thread.delete()
+            except discord.NotFound:
+                pass  # already gone: a retry after a lost ack
+            except discord.Forbidden:
+                # Without Manage Threads the thread cannot go (nor be locked); the bot started
+                # it, so it may still archive it.
+                log.warning("raid %s: cannot delete thread %s, archiving it", p.get("raidId"), thread.id)
+                try:
+                    await thread.edit(archived=True)
+                except discord.HTTPException:
+                    log.warning("raid %s: cannot archive thread %s either", p.get("raidId"), thread.id)
+        message_id = p.get("messageId")
+        if message_id:
+            try:
+                await self.channel().get_partial_message(int(message_id)).delete()
+            except discord.NotFound:
+                pass
+            except discord.Forbidden:
+                log.warning("raid %s: cannot delete message %s", p.get("raidId"), message_id)
 
     # --- clicks --------------------------------------------------------------------
 
