@@ -236,6 +236,7 @@ directly from the click; it may reply ephemerally ("You're set to Accept") immed
 | `raid.lock` | Re-render as 🔒 Locked, post "Sign-ups are locked. Officers can still change answers on the web." in the thread. | — | — |
 | `raid.cancel` | Edit the message to the compact ❌ line with `payload.reason`, remove buttons, DM everyone who ACCEPTed, archive the thread. | — | — |
 | `raid.close` | Edit the message to the compact ✅ line with the attended count, remove buttons, archive the thread. | — | — |
+| `raid.delete` | `{ raidId, threadId, messageId }`: the raid row is already gone, so nothing is fetched. Delete the thread (archive + lock it when the bot lacks Manage Threads), then the message. Quiet: no thread notice, no DMs. Missing objects count as done. | — | — |
 | `member.roles.sync` | `{ discordId, add: [roleId], remove: [roleId] }`. Only ever touches Guild Member, Guest, Raider, Trial and Social. **Never Officer** — that role grants site access and is managed by humans. | — | — |
 | `officers.notify` | Free-text message to `#officers`. Used for FAILED jobs and reconcile findings. | — | — |
 
