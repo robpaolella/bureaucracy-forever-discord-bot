@@ -680,6 +680,25 @@ class RoleBot(commands.Bot):
             log.warning("Can't post in #%s \u2014 need Send Messages there.", channel)
 
 
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        # Whoever makes someone a Guild Member, and however, they stop being a Guest.
+        if after.bot or not became_member(before, after):
+            return
+        guest = find_role(after.guild, GUEST_ROLE)
+        if guest is None or guest not in after.roles:
+            return
+        try:
+            await after.remove_roles(guest, reason=f"{MEMBER_ROLE} replaces {GUEST_ROLE}")
+        except discord.Forbidden:
+            log.warning("Can't remove %s from %s \u2014 check my role position.", GUEST_ROLE, after)
+
+
+def became_member(before: discord.Member, after: discord.Member) -> bool:
+    """True when this update gave the member the Guild Member role."""
+    had = any(r.name == MEMBER_ROLE for r in before.roles)
+    return not had and any(r.name == MEMBER_ROLE for r in after.roles)
+
+
 bot = RoleBot()
 
 

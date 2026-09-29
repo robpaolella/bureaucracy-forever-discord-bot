@@ -89,3 +89,10 @@ def test_an_unconfigured_rank_role_is_reported_and_nothing_changes(monkeypatch):
     asyncio.run(bot.TriageButton("raider", 7).callback(i))
     assert member.edits == []
     assert "ROLE_TRIAL_ID" in i.response.sent[0][0][0]
+
+
+def test_becoming_a_guild_member_is_noticed_once():
+    before, after = SimpleNamespace(roles=[GUEST]), SimpleNamespace(roles=[GUEST, MEMBER])
+    assert bot.became_member(before, after)
+    assert not bot.became_member(after, after)
+    assert not bot.became_member(before, before)
