@@ -131,6 +131,14 @@ class SiteApi:
         """PUT /members/:id/main from the "Set my main" flow (§9.7)."""
         return await self.request("PUT", f"/members/{discord_id}/main", json=body, idempotency_key=key)
 
+    async def needs(self) -> JSON:
+        """GET /needs (§9.8): every class and spec with its recruitment status, for /recruitment."""
+        return await self.request("GET", "/needs")
+
+    async def set_need(self, wow_class: str, spec: str, status: str, by_discord_id: int, *, key: str) -> JSON:
+        """PUT /needs (§9.8): one spec's status, written the way the web needs editor writes it."""
+        body = {"wowClass": wow_class, "spec": spec, "status": status, "byDiscordId": str(by_discord_id)}
+        return await self.request("PUT", "/needs", json=body, idempotency_key=key)
     async def trial(self, discord_id: int, action: str, by_discord_id: int, *, days: int | None, key: str) -> JSON:
         """POST /members/:id/trial (§3): an officer's answer to the trial check-in, promote or extend."""
         body: JSON = {"action": action, "byDiscordId": str(by_discord_id)}

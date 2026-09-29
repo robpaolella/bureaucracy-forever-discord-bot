@@ -17,6 +17,7 @@ from .applications import ApplicationsCog, DecisionButton
 from .config import SyncConfig
 from .mains import load_classes
 from .members import MembersCog
+from .needs import NeedsCog
 from .raids import RaidButton, RaidsCog
 from .runner import JobRunner
 from .tick import TickLoop
@@ -90,6 +91,7 @@ async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(ApplicationsCog(bot, core.api, config, core.runner))
     await bot.add_cog(MembersCog(bot, core.api, config, core.runner))
     await bot.add_cog(RaidsCog(bot, core.api, config, core.runner))
+    await bot.add_cog(NeedsCog(bot, core.api, config))
     await bot.add_cog(TrialsCog(bot, core.api, config, core.runner))
     intents: discord.Intents = bot.intents
     if not intents.message_content:
