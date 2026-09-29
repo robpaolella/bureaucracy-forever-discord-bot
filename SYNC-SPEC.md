@@ -204,6 +204,8 @@ All under `/api/bot/`. JSON in, JSON out. 401 on bad secret. 409 on a state conf
 | GET | `/members/:discordId` | role, rank, guild membership, main character. 404 if unknown. |
 | PUT | `/members/:discordId/main` | `{ firstName, secondName, wowClass, spec, raidRole }` from the "Set my main" flow (§9.7). Creates or replaces the member's main on the roster; rank untouched. 404 unknown member, 409 name taken. |
 | GET | `/classes` | Classes, specs and the raid roles each spec fills, for the bot's menus. |
+| GET | `/needs` | Recruitment needs for `/recruitment` (§9.8): `{ statuses: [high, medium, closed], classes: [{ key, label, specs: [{ name, status }] }] }`, every spec listed, closed unless an officer set it. |
+| PUT | `/needs` | `{ wowClass, spec, status, byDiscordId }` from `/recruitment`. `byDiscordId` must be an OFFICER, else 403; 400 for an unknown class, spec or status. The same write as the web needs editor, so the recruitment page, the home teaser and the officer editor show it within a minute. Answers `{ wowClass, spec, status }`. |
 | POST | `/members/sync` | `{ members: [{ discordId, name, avatarUrl, roles }], full }`. Upserts every member's name, avatar, site role, `inGuild` and rank from their Discord roles (§3). With `full`, anyone not listed gets `inGuild = false`. Idempotent; no Idempotency-Key needed. |
 | GET | `/health` | `{ ok: true, version }` |
 
@@ -381,6 +383,9 @@ rows only; answered rows are kept.
    and raid role it has are marked "your current pick" (marked, not pre-selected: Discord sends
    nothing when a pre-selected option is picked again) and the name modal opens filled in, from
    `GET /members/:discordId`. That look-up is best effort; without it the flow runs unmarked.
+8. **/recruitment (Discord)** — officers run it in the recruitment channel
+   (`RECRUITMENT_NEEDS_CHANNEL_ID`): class, then spec (each spec shows its current status), then
+   High / Medium / Closed. The bot writes it through `PUT /needs`.
 
 ---
 
@@ -394,6 +399,7 @@ Bot (server env file): `DISCORD_TOKEN`, `GUILD_ID` (required by the sync now), `
 `SITE_PUBLIC_URL=https://www.bureauguild.com`, `BOT_SHARED_SECRET`, `APPLICATIONS_FORUM_ID`,
 `RAID_SIGNUPS_CHANNEL_ID`, `OFFICERS_CHANNEL_ID`, `ROLE_GUILD_MEMBER_ID`, `ROLE_GUEST_ID`,
 `ROLE_RAIDER_ID`, `ROLE_TRIAL_ID`, `ROLE_SOCIAL_ID`, `ROLE_OFFICER_ID` (read only, for the snapshot),
+`RECRUITMENT_NEEDS_CHANNEL_ID` (where `/recruitment` runs; blank allows any channel),
 `POLL_SECONDS=5`, `TICK_SECONDS=60`, `SNAPSHOT_SECONDS=300`.
 
 ---

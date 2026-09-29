@@ -35,6 +35,7 @@ class SyncConfig:
     role_trial_id: int
     role_social_id: int
     role_officer_id: int
+    recruitment_needs_channel_id: int
     guild_id: int
     snapshot_seconds: float
     poll_seconds: float
@@ -55,6 +56,7 @@ class SyncConfig:
             role_trial_id=_int("ROLE_TRIAL_ID"),
             role_social_id=_int("ROLE_SOCIAL_ID"),
             role_officer_id=_int("ROLE_OFFICER_ID"),
+            recruitment_needs_channel_id=_int("RECRUITMENT_NEEDS_CHANNEL_ID"),
             guild_id=_int("GUILD_ID"),
             snapshot_seconds=_seconds("SNAPSHOT_SECONDS", 300.0),
             poll_seconds=_seconds("POLL_SECONDS", 5.0),
