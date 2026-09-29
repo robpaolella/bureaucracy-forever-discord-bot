@@ -35,6 +35,7 @@ def test_the_three_menus_class_spec_then_priority():
 def _pick(select, value, api):
     select._values = [value]  # what Discord would have sent
     select.api = api
+    needs.NeedsView(select)  # the step's own view, which the callback stops
     i = SimpleNamespace(
         id=900,
         user=SimpleNamespace(id=77),
@@ -85,3 +86,35 @@ def test_the_command_only_runs_in_the_recruitment_channel_and_for_officers():
     config = SimpleNamespace(recruitment_needs_channel_id=10, role_officer_id=5)
     assert _command(config, [5], 11) == ["Run this in <#10>."]
     assert _command(config, [4], 10) == ["Only officers set recruitment needs."]
+    unset = SimpleNamespace(recruitment_needs_channel_id=0, role_officer_id=0)
+    assert "ROLE_OFFICER_ID" in _command(unset, [5], 10)[0]
+
+
+def test_an_officer_gets_the_class_menu():
+    config = SimpleNamespace(recruitment_needs_channel_id=10, role_officer_id=5)
+    cog = needs.NeedsCog.__new__(needs.NeedsCog)
+    cog.config = config
+    cog.api = SimpleNamespace(needs=AsyncMock(return_value=_needs()))
+    sent = []
+
+    async def send(text, view, ephemeral, wait):
+        sent.append((text, view))
+
+    i = SimpleNamespace(
+        channel_id=10,
+        user=SimpleNamespace(roles=[SimpleNamespace(id=5)]),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=send),
+    )
+    asyncio.run(needs.NeedsCog.recruitment.callback(cog, i))
+    text, view = sent[0]
+    assert text.startswith("Which class") and isinstance(view.children[0], needs.ClassSelect)
+
+
+def test_a_site_outage_changes_nothing_and_says_so():
+    data = _needs()
+    api = SimpleNamespace(set_need=AsyncMock(side_effect=TimeoutError()))
+    select = needs.StatusSelect(api, data, data["classes"][0], data["classes"][0]["specs"][0])
+    i = _pick(select, "high", api)
+    assert i.edit_original_response.await_args.kwargs["content"].startswith("Couldn't reach the website. Nothing changed")
+    assert data["classes"][0]["specs"][0]["status"] == "medium"

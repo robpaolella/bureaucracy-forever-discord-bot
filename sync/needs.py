@@ -76,6 +76,9 @@ class ClassSelect(discord.ui.Select):
         cls = find_class(self.needs, self.values[0])
         if cls is None:
             return await interaction.response.edit_message(content="That class is not on the list any more; run /recruitment again.", view=None)
+        if not cls.get("specs"):
+            return await interaction.response.edit_message(content=f"The website lists no {cls['label']} specs; tell whoever runs the site.", view=None)
+        self.view.stop()  # or its timeout would later overwrite the next step's menu
         view = NeedsView(SpecSelect(self.api, self.needs, cls))
         await interaction.response.edit_message(content=f"**{cls['label']}**: which spec?", view=view)
         view.message = await interaction.original_response()
@@ -93,6 +96,7 @@ class SpecSelect(discord.ui.Select):
         spec = next((s for s in self.cls.get("specs", []) if s.get("name") == self.values[0]), None)
         if spec is None:
             return await interaction.response.edit_message(content="That spec is not on the list any more; run /recruitment again.", view=None)
+        self.view.stop()
         view = NeedsView(StatusSelect(self.api, self.needs, self.cls, spec))
         now = status_label(str(spec.get("status", "closed")))
         await interaction.response.edit_message(content=f"**{self.cls['label']} {spec['name']}** is **{now}** now. Set it to?", view=view)
@@ -112,6 +116,7 @@ class StatusSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         status = self.values[0]
+        self.view.stop()
         label = f"{self.cls['label']} {self.spec['name']}"
         # The site may take longer than Discord's three seconds on a cold start.
         await interaction.response.defer()
@@ -147,7 +152,9 @@ class NeedsCog(commands.Cog):
         if channel_id and interaction.channel_id != channel_id:
             return await interaction.response.send_message(f"Run this in <#{channel_id}>.", ephemeral=True)
         officer = self.config.role_officer_id
-        if officer and not any(r.id == officer for r in getattr(interaction.user, "roles", [])):
+        if not officer:
+            return await interaction.response.send_message("`ROLE_OFFICER_ID` is not set in the bot's config, so I can't tell who is an officer.", ephemeral=True)
+        if not any(r.id == officer for r in getattr(interaction.user, "roles", [])):
             return await interaction.response.send_message("Only officers set recruitment needs.", ephemeral=True)
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
