@@ -122,6 +122,12 @@ def triage_rank_roles(choice: str) -> tuple[list[str], list[str]]:
     return grant, [k for k in RANK_ROLE_IDS if k not in grant]
 
 
+def roles_after_change(member: discord.Member, add: list[discord.Role], remove: list[discord.Role]) -> list[discord.Role]:
+    """The member's roles with `add` in and `remove` out, for a single edit call."""
+    keep = [r for r in member.roles if r not in remove and not r.is_default()]
+    return keep + [r for r in add if r not in keep]
+
+
 def missing_roles(guild: discord.Guild) -> list[str]:
     wanted = CLASSES + main_role_names() + GROUP_ROLES + [GUEST_ROLE, MEMBER_ROLE]
     return [n for n in wanted if find_role(guild, n) is None]
@@ -576,7 +582,8 @@ class TriageButton(
                 assigned = [guest]
             else:
                 grant, drop = triage_rank_roles(self.action)
-                unset = [RANK_ROLE_ENV[k] for k in grant + drop if not guild.get_role(RANK_ROLE_IDS[k])]
+                # Roles to grant must exist; a rank role that is not set up simply has nothing to remove.
+                unset = [RANK_ROLE_ENV[k] for k in grant if not guild.get_role(RANK_ROLE_IDS[k])]
                 if unset:
                     return await interaction.response.send_message(
                         "These role settings are missing or wrong in the bot's config: "
@@ -584,11 +591,8 @@ class TriageButton(
                         ephemeral=True,
                     )
                 ranks = [guild.get_role(RANK_ROLE_IDS[k]) for k in grant]
-                remove = [guest] + [guild.get_role(RANK_ROLE_IDS[k]) for k in drop]
+                remove = [guest] + [r for k in drop if (r := guild.get_role(RANK_ROLE_IDS[k]))]
                 assigned = [gmember, *ranks]
-                # Imported here so this file still runs without the sync package's dependencies.
-                from sync.members import roles_after_change
-
                 # One edit, so the site's roster sees one change rather than two halves.
                 await member.edit(
                     roles=roles_after_change(member, assigned, remove),
@@ -684,6 +688,8 @@ class RoleBot(commands.Bot):
         # Whoever makes someone a Guild Member, and however, they stop being a Guest.
         if after.bot or not became_member(before, after):
             return
+        if GUILD_ID and after.guild.id != int(GUILD_ID):
+            return  # only our guild; another server's "Guild Member" is not ours to tidy
         guest = find_role(after.guild, GUEST_ROLE)
         if guest is None or guest not in after.roles:
             return
