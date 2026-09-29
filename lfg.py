@@ -735,6 +735,7 @@ class Lfg(commands.Cog):
     # ---------- command ----------
 
     @app_commands.command(name="lfg", description="Recruit for a dungeon group.")
+    @app_commands.guild_only()
     @app_commands.describe(
         dungeon="Which dungeon are you running?",
         role="What are you playing in this group?",
@@ -762,7 +763,8 @@ class Lfg(commands.Cog):
         view = SetupView(self, dungeon, role.value, notes)
         await interaction.response.send_message(
             f"**{dungeon}** \u2014 you're the {ROLE_LABEL[role.value]}. "
-            "If anyone else is already in, mark them below, then post.",
+            "If anyone else is already in, mark them below, then post"
+            + (f" in <#{LFG_CHANNEL_ID}>." if LFG_CHANNEL_ID else "."),
             view=view,
             ephemeral=True,
         )
@@ -790,7 +792,8 @@ class Lfg(commands.Cog):
         channel = post_channel(interaction)
         if channel is None:
             return await interaction.response.edit_message(
-                content=f"I can't find <#{LFG_CHANNEL_ID}>. Ask an admin to check `LFG_CHANNEL_ID`.",
+                content=f"I can't post in <#{LFG_CHANNEL_ID}>: it's missing or not a text channel. "
+                "Ask an admin to check `LFG_CHANNEL_ID`.",
                 view=None,
             )
         perms = channel.permissions_for(interaction.guild.me)
