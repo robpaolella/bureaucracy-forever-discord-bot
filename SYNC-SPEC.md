@@ -174,10 +174,18 @@ snapshot have left and get `inGuild = false`. Role changes the bot makes itself 
 `member.edit`, so Discord reports one state, not two halves.
 
 Trials: accepting a raider application sets `rank = TRIAL`, `trialStartedAt = now`, and the
-decide job adds Guild Member, Raider and Trial and removes Guest and Social. Fourteen days
-later tick posts once to `#officer-chat` asking whether to extend or end the trial; officers
-answer by setting Raider or Social on the roster editor. The trial DM text is a placeholder
-until Robert writes the real one.
+decide job adds Guild Member, Raider and Trial and removes Guest and Social. Anyone who gets
+the Trial role another way (the #new-users triage, an officer by hand) starts the same clock
+through the snapshot. The check-in is due at `User.trialCheckInAt`, or fourteen days after
+`trialStartedAt` while that is unset; tick then enqueues one `trial.checkin` and sets
+`trialNudgedAt`. The bot posts it to `#officers`, mentioning the Officer role, with **Promote to
+Raider** and an **Extend trial** menu (1 to 7 days), both answered through
+`POST /members/:discordId/trial`. Promote sets rank RAIDER the way the roster editor does (the
+Trial role comes off through `member.roles.sync`); extend sets `trialCheckInAt = now + days` and
+clears `trialNudgedAt`, so the check-in comes back then. Leaving Trial by any route clears
+`trialStartedAt`, `trialNudgedAt` and `trialCheckInAt`. This is the only trial reminder;
+officers may still end a trial on the roster editor. The trial DM text is a placeholder until
+Robert writes the real one.
 
 ---
 
@@ -204,8 +212,9 @@ All under `/api/bot/`. JSON in, JSON out. 401 on bad secret. 409 on a state conf
 | GET | `/members/:discordId` | role, rank, guild membership, main character. 404 if unknown. |
 | PUT | `/members/:discordId/main` | `{ firstName, secondName, wowClass, spec, raidRole }` from the "Set my main" flow (§9.7). Creates or replaces the member's main on the roster; rank untouched. 404 unknown member, 409 name taken. |
 | GET | `/classes` | Classes, specs and the raid roles each spec fills, for the bot's menus. |
+| POST | `/members/:discordId/trial` | `{ action: promote\|extend, days?, byDiscordId }` from the trial check-in (§3). `byDiscordId` must be an OFFICER, else 403. `days` is 1–7 for extend. 404 unknown member; 409 with `reason` when they are not a trial any more. Answers `{ action, rank, checkInAt? }`. |
 | GET | `/needs` | Recruitment needs for `/recruitment` (§9.8): `{ statuses: [high, medium, closed], classes: [{ key, label, specs: [{ name, status }] }] }`, every spec listed, closed unless an officer set it. |
-| PUT | `/needs` | `{ wowClass, spec, status, byDiscordId }` from `/recruitment`. `byDiscordId` must be an OFFICER, else 403; 400 for an unknown class, spec or status. The same write as the web needs editor, so the recruitment page, the home teaser and the officer editor show it within a minute. Answers `{ wowClass, spec, status }`. |
+| PUT | `/needs` | `{ wowClass, spec, status, byDiscordId }` from `/recruitment`. `byDiscordId` must be an OFFICER, else 403; 400 for an unknown class, spec or status. The same write as the web needs editor, so the recruitment page, the home teaser and the officer editor show it within a minute. Anything but high also takes the spec's home-page star away. Answers `{ wowClass, spec, status }`. |
 | POST | `/members/sync` | `{ members: [{ discordId, name, avatarUrl, roles }], full }`. Upserts every member's name, avatar, site role, `inGuild` and rank from their Discord roles (§3). With `full`, anyone not listed gets `inGuild = false`. Idempotent; no Idempotency-Key needed. |
 | GET | `/health` | `{ ok: true, version }` |
 
@@ -241,6 +250,7 @@ directly from the click; it may reply ephemerally ("You're set to Accept") immed
 | `raid.delete` | `{ raidId, threadId, messageId }`: the raid row is already gone, so nothing is fetched. Delete the thread (archive it when the bot lacks Manage Threads), then the message. Quiet: no thread notice, no DMs. Missing objects count as done. | — | — |
 | `member.roles.sync` | `{ discordId, add: [roleId], remove: [roleId] }`. Only ever touches Guild Member, Guest, Raider, Trial and Social. **Never Officer** — that role grants site access and is managed by humans. | — | — |
 | `officers.notify` | Free-text message to `#officers`. Used for FAILED jobs and reconcile findings. | — | — |
+| `trial.checkin` | `{ discordId, name, startedAt, extended }` (§3). Message in `#officers` mentioning the Officer role: whose trial is up and since when, with **Promote to Raider** (button) and **Extend trial** (menu, 1–7 days). Both call `POST /members/:discordId/trial` and survive restarts; the answer edits the message to the outcome and removes them. Entity `member:<discordId>`. | — | — |
 
 The `raid.post` / `raid.update` / `raid.lock` / `raid.cancel` / `raid.close` rows describe
 the forum-era mechanism; since #raid-signups became a text channel (§8) the bot posts one

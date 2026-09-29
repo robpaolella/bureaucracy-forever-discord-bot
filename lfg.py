@@ -355,6 +355,14 @@ def render(guild: discord.Guild, post: sqlite3.Row, rows) -> str:
     return "\n".join(lines)
 
 
+def post_channel(interaction: discord.Interaction) -> discord.abc.GuildChannel | None:
+    """Where an /lfg post goes: #looking-for-group when LFG_CHANNEL_ID is set, else where it was run."""
+    if not LFG_CHANNEL_ID:
+        return interaction.channel
+    channel = interaction.guild.get_channel(LFG_CHANNEL_ID)
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
 class LfgButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"wf:lfg:(?P<action>tank|healer|dps|leave|manage):(?P<mid>\d+)",
@@ -727,6 +735,7 @@ class Lfg(commands.Cog):
     # ---------- command ----------
 
     @app_commands.command(name="lfg", description="Recruit for a dungeon group.")
+    @app_commands.guild_only()
     @app_commands.describe(
         dungeon="Which dungeon are you running?",
         role="What are you playing in this group?",
@@ -751,15 +760,11 @@ class Lfg(commands.Cog):
                 f"I don't know a dungeon called `{dungeon}`. Pick one from the list.",
                 ephemeral=True,
             )
-        if LFG_CHANNEL_ID and interaction.channel_id != LFG_CHANNEL_ID:
-            return await interaction.response.send_message(
-                f"Run this in <#{LFG_CHANNEL_ID}>.", ephemeral=True
-            )
-
         view = SetupView(self, dungeon, role.value, notes)
         await interaction.response.send_message(
             f"**{dungeon}** \u2014 you're the {ROLE_LABEL[role.value]}. "
-            "If anyone else is already in, mark them below, then post.",
+            "If anyone else is already in, mark them below, then post"
+            + (f" in <#{LFG_CHANNEL_ID}>." if LFG_CHANNEL_ID else "."),
             view=view,
             ephemeral=True,
         )
@@ -783,11 +788,18 @@ class Lfg(commands.Cog):
     # ---------- post creation ----------
 
     async def create_post(self, interaction: discord.Interaction, setup: SetupView) -> None:
-        channel = interaction.channel
+        # /lfg runs anywhere; the post and its thread always go to #looking-for-group when it is set.
+        channel = post_channel(interaction)
+        if channel is None:
+            return await interaction.response.edit_message(
+                content=f"I can't post in <#{LFG_CHANNEL_ID}>: it's missing or not a text channel. "
+                "Ask an admin to check `LFG_CHANNEL_ID`.",
+                view=None,
+            )
         perms = channel.permissions_for(interaction.guild.me)
         if not (perms.send_messages and perms.create_public_threads):
             return await interaction.response.edit_message(
-                content="I need **Send Messages** and **Create Public Threads** here.",
+                content=f"I need **Send Messages** and **Create Public Threads** in {channel.mention}.",
                 view=None,
             )
 

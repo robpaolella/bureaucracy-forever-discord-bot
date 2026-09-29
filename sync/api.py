@@ -139,6 +139,12 @@ class SiteApi:
         """PUT /needs (§9.8): one spec's status, written the way the web needs editor writes it."""
         body = {"wowClass": wow_class, "spec": spec, "status": status, "byDiscordId": str(by_discord_id)}
         return await self.request("PUT", "/needs", json=body, idempotency_key=key)
+    async def trial(self, discord_id: int, action: str, by_discord_id: int, *, days: int | None, key: str) -> JSON:
+        """POST /members/:id/trial (§3): an officer's answer to the trial check-in, promote or extend."""
+        body: JSON = {"action": action, "byDiscordId": str(by_discord_id)}
+        if days is not None:
+            body["days"] = days
+        return await self.request("POST", f"/members/{discord_id}/trial", json=body, idempotency_key=key)
 
     async def members_sync(self, members: list[JSON], *, full: bool) -> JSON:
         """POST /members/sync (§3): the guild as the bot sees it; `full` means everyone is listed."""
