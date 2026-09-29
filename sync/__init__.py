@@ -20,6 +20,7 @@ from .members import MembersCog
 from .raids import RaidButton, RaidsCog
 from .runner import JobRunner
 from .tick import TickLoop
+from .trials import TrialExtendSelect, TrialPromoteButton, TrialsCog
 
 log = logging.getLogger("sync")
 
@@ -37,7 +38,7 @@ class SyncCog(commands.Cog):
 
     async def cog_load(self) -> None:
         await self.api.start()
-        self.bot.add_dynamic_items(DecisionButton, RaidButton)
+        self.bot.add_dynamic_items(DecisionButton, RaidButton, TrialPromoteButton, TrialExtendSelect)
 
     async def cog_unload(self) -> None:
         self.ticker.stop()
@@ -89,6 +90,7 @@ async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(ApplicationsCog(bot, core.api, config, core.runner))
     await bot.add_cog(MembersCog(bot, core.api, config, core.runner))
     await bot.add_cog(RaidsCog(bot, core.api, config, core.runner))
+    await bot.add_cog(TrialsCog(bot, core.api, config, core.runner))
     intents: discord.Intents = bot.intents
     if not intents.message_content:
         log.warning("Message Content intent is off: thread messages will not become notes")
