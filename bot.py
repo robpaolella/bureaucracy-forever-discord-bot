@@ -7,7 +7,8 @@ Posts a persistent button panel that lets members:
   3. Pick group-finder roles -> Tank / Healer / DPS
 
 Also handles new arrivals: assigns Guest on join and posts a triage message
-with Guild Member / Guest buttons for officers to answer.
+with Guild Member / Guest buttons for officers to answer. Guild Member then asks
+Social, Raider or Raider Trial and grants the matching roles.
 
 Role names in Discord must match the names configured below exactly.
 Requires the SERVER MEMBERS privileged intent (for on_member_join).
@@ -48,6 +49,23 @@ GROUP_ROLES = ["Tank", "Healer", "DPS"]
 GUEST_ROLE = "Guest"
 MEMBER_ROLE = "Guild Member"
 NEW_USER_CHANNEL_ID = int(os.environ.get("NEW_USER_CHANNEL_ID", "0") or 0)
+
+
+def _role_id(name: str) -> int:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+# The rank roles a new guild member can get, by id (the same settings the site sync uses).
+RANK_ROLE_ENV = {"raider": "ROLE_RAIDER_ID", "trial": "ROLE_TRIAL_ID", "social": "ROLE_SOCIAL_ID"}
+RANK_ROLE_IDS = {key: _role_id(env) for key, env in RANK_ROLE_ENV.items()}
+
+# Triage choice -> (button label, rank roles it grants). The other rank roles come off.
+TRIAGE_RANKS = {
+    "social": ("Social", ("social",)),
+    "raider": ("Raider", ("raider",)),
+    "trial": ("Raider Trial", ("raider", "trial")),
+}
 
 # Unicode fallbacks. To use custom emoji, replace the value with the full
 # code string and nothing else, e.g.  "Druid": "<:druid:1234567890123456789>"
@@ -96,6 +114,18 @@ def current_main(member: discord.Member) -> str | None:
         if c + MAIN_SUFFIX in names:
             return c
     return None
+
+
+def triage_rank_roles(choice: str) -> tuple[list[str], list[str]]:
+    """Rank role keys to add and to remove for a triage choice. Pure."""
+    grant = list(TRIAGE_RANKS[choice][1])
+    return grant, [k for k in RANK_ROLE_IDS if k not in grant]
+
+
+def roles_after_change(member: discord.Member, add: list[discord.Role], remove: list[discord.Role]) -> list[discord.Role]:
+    """The member's roles with `add` in and `remove` out, for a single edit call."""
+    keep = [r for r in member.roles if r not in remove and not r.is_default()]
+    return keep + [r for r in add if r not in keep]
 
 
 def missing_roles(guild: discord.Guild) -> list[str]:
@@ -471,9 +501,27 @@ def panel_embed() -> discord.Embed:
 # NEW MEMBER TRIAGE
 # --------------------------------------------------------------------------
 
+TRIAGE_LABELS = {"member": MEMBER_ROLE, "guest": GUEST_ROLE, "back": "Back"} | {
+    k: label for k, (label, _) in TRIAGE_RANKS.items()
+}
+TRIAGE_STYLES = {
+    "member": discord.ButtonStyle.success,
+    "raider": discord.ButtonStyle.success,
+    "trial": discord.ButtonStyle.primary,
+}
+
+
+def triage_prompt(uid: int) -> str:
+    return f"The user <@{uid}> has joined the server. Are they a guild member or just a guest?"
+
+
+def triage_rank_prompt(uid: int) -> str:
+    return f"<@{uid}> is joining as a guild member. Are they Social, a Raider or a Raider Trial?"
+
+
 class TriageButton(
     discord.ui.DynamicItem[discord.ui.Button],
-    template=r"wf:triage:(?P<action>member|guest):(?P<uid>\d+)",
+    template=r"wf:triage:(?P<action>member|guest|social|raider|trial|back):(?P<uid>\d+)",
 ):
     """Button whose target user is encoded in the custom_id, so it survives restarts."""
 
@@ -482,8 +530,8 @@ class TriageButton(
         self.uid = uid
         super().__init__(
             discord.ui.Button(
-                label=MEMBER_ROLE if action == "member" else GUEST_ROLE,
-                style=discord.ButtonStyle.success if action == "member" else discord.ButtonStyle.secondary,
+                label=TRIAGE_LABELS[action],
+                style=TRIAGE_STYLES.get(action, discord.ButtonStyle.secondary),
                 custom_id=f"wf:triage:{action}:{uid}",
             )
         )
@@ -501,6 +549,16 @@ class TriageButton(
         return True
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # Guild Member is a two-step answer: first the kind of member, then the roles.
+        if self.action == "member":
+            return await interaction.response.edit_message(
+                content=triage_rank_prompt(self.uid), view=triage_rank_view(self.uid)
+            )
+        if self.action == "back":
+            return await interaction.response.edit_message(
+                content=triage_prompt(self.uid), view=triage_view(self.uid)
+            )
+
         guild = interaction.guild
         member = guild.get_member(self.uid)
 
@@ -518,23 +576,35 @@ class TriageButton(
             )
 
         try:
-            if self.action == "member":
-                await member.add_roles(gmember, reason=f"Guild member, set by {interaction.user}")
-                if guest in member.roles:
-                    await member.remove_roles(guest, reason=f"Guild member, set by {interaction.user}")
-                assigned = gmember
-            else:
+            if self.action == "guest":
                 if guest not in member.roles:
                     await member.add_roles(guest, reason=f"Guest, set by {interaction.user}")
-                assigned = guest
+                assigned = [guest]
+            else:
+                grant, drop = triage_rank_roles(self.action)
+                # Roles to grant must exist; a rank role that is not set up simply has nothing to remove.
+                unset = [RANK_ROLE_ENV[k] for k in grant if not guild.get_role(RANK_ROLE_IDS[k])]
+                if unset:
+                    return await interaction.response.send_message(
+                        "These role settings are missing or wrong in the bot's config: "
+                        + ", ".join(f"`{n}`" for n in unset),
+                        ephemeral=True,
+                    )
+                ranks = [guild.get_role(RANK_ROLE_IDS[k]) for k in grant]
+                remove = [guest] + [r for k in drop if (r := guild.get_role(RANK_ROLE_IDS[k]))]
+                assigned = [gmember, *ranks]
+                # One edit, so the site's roster sees one change rather than two halves.
+                await member.edit(
+                    roles=roles_after_change(member, assigned, remove),
+                    reason=f"{TRIAGE_LABELS[self.action]}, set by {interaction.user}",
+                )
         except discord.Forbidden:
             return await interaction.response.send_message(HIERARCHY_HELP, ephemeral=True)
 
+        names = [r.mention for r in assigned]
+        joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
         await interaction.response.edit_message(
-            content=(
-                f"New user {member.mention} was set to {assigned.mention} "
-                f"by {interaction.user.mention}."
-            ),
+            content=f"New user {member.mention} was set to {joined} by {interaction.user.mention}.",
             view=None,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -544,6 +614,13 @@ def triage_view(uid: int) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
     v.add_item(TriageButton("member", uid))
     v.add_item(TriageButton("guest", uid))
+    return v
+
+
+def triage_rank_view(uid: int) -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    for action in (*TRIAGE_RANKS, "back"):
+        v.add_item(TriageButton(action, uid))
     return v
 
 
@@ -599,13 +676,33 @@ class RoleBot(commands.Bot):
 
         try:
             await channel.send(
-                f"The user {member.mention} has joined the server. "
-                "Are they a guild member or just a guest?",
+                triage_prompt(member.id),
                 view=triage_view(member.id),
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
         except discord.Forbidden:
             log.warning("Can't post in #%s \u2014 need Send Messages there.", channel)
+
+
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        # Whoever makes someone a Guild Member, and however, they stop being a Guest.
+        if after.bot or not became_member(before, after):
+            return
+        if GUILD_ID and after.guild.id != int(GUILD_ID):
+            return  # only our guild; another server's "Guild Member" is not ours to tidy
+        guest = find_role(after.guild, GUEST_ROLE)
+        if guest is None or guest not in after.roles:
+            return
+        try:
+            await after.remove_roles(guest, reason=f"{MEMBER_ROLE} replaces {GUEST_ROLE}")
+        except discord.Forbidden:
+            log.warning("Can't remove %s from %s \u2014 check my role position.", GUEST_ROLE, after)
+
+
+def became_member(before: discord.Member, after: discord.Member) -> bool:
+    """True when this update gave the member the Guild Member role."""
+    had = any(r.name == MEMBER_ROLE for r in before.roles)
+    return not had and any(r.name == MEMBER_ROLE for r in after.roles)
 
 
 bot = RoleBot()
