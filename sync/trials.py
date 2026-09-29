@@ -101,7 +101,12 @@ async def answer(interaction: discord.Interaction, discord_id: str, action: str,
     try:
         result = await cog.api.trial(int(discord_id), action, interaction.user.id, days=days, key=str(interaction.id))
     except ApiError as e:
-        await interaction.followup.send(e.reason, ephemeral=True)
+        if e.status == 409:
+            # Not a trial any more (someone got there first): this check-in can never succeed, so close it.
+            await finish(interaction, f"{e.reason} Nothing to do here.")
+        else:
+            # A refusal (not an officer) or a bad request: the buttons stay for someone who may answer.
+            await interaction.followup.send(e.reason, ephemeral=True)
         return
     except Exception as e:  # noqa: BLE001 — a timeout or refused connection; the buttons stay for another try
         log.warning("trial %s for %s failed: %s", action, discord_id, e)
@@ -111,7 +116,16 @@ async def answer(interaction: discord.Interaction, discord_id: str, action: str,
         text = promoted_text(discord_id, interaction.user)
     else:
         text = extended_text(discord_id, days or 0, result.get("checkInAt"), interaction.user)
-    await interaction.edit_original_response(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
+    await finish(interaction, text)
+
+
+async def finish(interaction: discord.Interaction, text: str) -> None:
+    """Turn the check-in into its outcome. The site has already acted, so a failed edit still tells the officer."""
+    try:
+        await interaction.edit_original_response(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException as e:
+        log.warning("could not edit the trial check-in: %s", e)
+        await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 class TrialsCog(commands.Cog):
