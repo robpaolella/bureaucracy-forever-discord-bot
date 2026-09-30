@@ -425,4 +425,4 @@ Bot (server env file): `DISCORD_TOKEN`, `GUILD_ID` (required by the sync now), `
   in Discord updates the web within 10 s and the embed counts within 10 s. Responding on the
   web updates the embed. Lock at T−2h, reminders at 72 h and 24 h, close after the night.
 - The bot restarted mid-way loses nothing: jobs resume, buttons still work.
-- `bash .claude/hooks/test-git-guard.sh` and both repos' test suites pass; every PR reviewed.
+- Both repos' Checks (listed in each `AGENTS.md`) pass; every PR reviewed.
