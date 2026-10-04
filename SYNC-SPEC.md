@@ -151,10 +151,9 @@ model BotRequest {
 }
 ```
 
-Seed `RaidTemplate` with the Classic tiers, marked `TODO: confirm` in the seed file:
-Molten Core 40 (4/12/10/14), Onyxia's Lair 40 (3/12/11/14), Blackwing Lair 40 (4/12/10/14),
-Zul'Gurub 20 (2/6/5/7), Ruins of Ahn'Qiraj 20 (2/6/5/7), Temple of Ahn'Qiraj 40 (4/12/10/14),
-Naxxramas 40 (4/12/10/14). Order is tank/healer/melee/ranged.
+Seed `RaidTemplate` with the raid templates configured in production:
+Barrow Deeps 10 (2/2/3/3), Hyjal Summit 20 (2/3/7/8), Onyxia's Lair 40 (3/12/11/14).
+Order is tank/healer/melee/ranged.
 
 Roster derivation (amended 2026-09-27, Robert's decision): Discord is the source for who is
 in the guild. `User.inGuild` is true for anyone holding Guild Member or Officer; only they
