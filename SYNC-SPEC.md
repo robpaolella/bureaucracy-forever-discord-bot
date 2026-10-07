@@ -190,8 +190,9 @@ Robert writes the real one.
 
 ## 4. Site API for the bot
 
-All under `/api/bot/`. JSON in, JSON out. 401 on bad secret. 409 on a state conflict with a
-`reason` string the bot shows verbatim to the user who clicked.
+All under `/api/bot/`. JSON in, JSON out (204 has no body). 401 on bad secret. 409 on a state
+conflict with a `reason` string the bot shows verbatim to the user who clicked, except the
+character routes below: their `reason` is a stable code and `error` is the message to show.
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -204,11 +205,13 @@ All under `/api/bot/`. JSON in, JSON out. 401 on bad secret. 409 on a state conf
 | POST | `/applications/:id/notes` | `{ discordMessageId, authorDiscordId, body, createdAt }`. Author must resolve to an OFFICER; otherwise 403 and the bot ignores the message. |
 | PATCH | `/notes/by-message/:discordMessageId` | `{ body }` |
 | DELETE | `/notes/by-message/:discordMessageId` | soft delete |
-| GET | `/raids/:id` | Raid + template + counts + `viewer` block when `?discordId=` is given (their standing and response). |
+| GET | `/raids/:id` | Raid + template + counts + `viewer` block when `?discordId=` is given: `{ standing, response, lootTable, reservesLocked, reservesComplete, reservesUrl }`, or `null` when that member has no sign-up (so cannot reserve). `lootTable` is true when loot is on and the raid's template has at least one loot-table item; `reservesLocked` is true from `startsAt − 120 min` (the reserve lock, not the sign-up lock); `reservesComplete` is true only when the member has both a hard and a soft reserve on the raid, as for `raid.reserves.remind`; `reservesUrl` is `<site>/members/calendar/<raidId>?reserves=1`, which opens that member's own reserves window after sign-in when they are Accept or Tentative with a character, the raid is not cancelled and reserves aren't locked, and otherwise just shows the raid page. `POST /raids/:id/respond` answers with the same `viewer` block. |
 | POST | `/raids/:id/respond` | `{ discordId, response: ACCEPT\|TENTATIVE\|ABSENT, reason? }`. Rules in §7. |
 | POST | `/raids/:id/bench` | `{ discordId }` — opt onto the bench. 409 if already on roster. |
 | POST | `/raids/:id/attendance` | `{ byDiscordId, attended: [discordId], absent: [discordId] }`. Officers only, after `startsAt + durationMin`. |
-| GET | `/members/:discordId` | role, rank, guild membership, main character. 404 if unknown. |
+| GET | `/members/:discordId` | role, rank, guild membership, main character (existing fields unchanged), plus `characters: [{ id, name, wowClass, spec, raidRole, isMain }]`, main first then alts by name. `wowClass` and `raidRole` are lowercase. 404 if unknown. |
+| POST | `/members/:discordId/characters` | `{ name, wowClass, spec, raidRole }` adds an alt using the site's character rules; `raidRole` maps to the rules' `role`. 201 `{ character: { id, name, wowClass, spec, raidRole, isMain } }`; same-name alt for this member returns 200 with the existing character, without changing it. 404 unknown member; 400 `{ reason: "invalid", error }`; 413 `{ error }` for an oversized body; 409 `{ reason: "name_taken"\|"limit"\|"no_main"\|"busy", error }` (`busy` means retries lost a race; retry with a new interaction/key, since the same key replays the same failure). Maximum eight characters including main. Uses `Idempotency-Key`; a replay preserves the original status and body. Does not change Discord class tags. |
+| DELETE | `/members/:discordId/characters/:characterId` | Removes an alt, never a main (including a lone main). 204 with no body when removed or already gone, including a concurrent removal. 404 unknown member or another member's character; 409 `{ reason: "main"\|"busy", error }` if main or retries exhausted (`busy` requires a new interaction/key to retry; the same key replays the failure). Uses `Idempotency-Key`, including bodyless 204 replay. Does not change Discord class tags. |
 | PUT | `/members/:discordId/main` | `{ firstName, secondName, wowClass, spec, raidRole }` from the "Set my main" flow (§9.7). Creates or replaces the member's main on the roster; rank untouched. 404 unknown member, 409 name taken. |
 | GET | `/classes` | Classes, specs and the raid roles each spec fills, for the bot's menus. |
 | POST | `/members/:discordId/trial` | `{ action: promote\|extend, days?, byDiscordId }` from the trial check-in (§3). `byDiscordId` must be an OFFICER, else 403. `days` is 1–7 for extend. 404 unknown member; 409 with `reason` when they are not a trial any more. Answers `{ action, rank, checkInAt? }`. |
@@ -243,6 +246,7 @@ directly from the click; it may reply ephemerally ("You're set to Accept") immed
 | `raid.post` | Post one message in `RAID_SIGNUPS_CHANNEL_ID`: embed (§8) titled `🟢 Template — Ddd Mon D` (+ " · added late" when `payload.late`) + buttons Accept / Tentative / Decline / Join bench / View roster (link); open a thread on it named like the title minus the state marker. | `{ threadId, messageId }` | store on Raid |
 | `raid.update` | Re-render the embed (title prefix and colour carry the state) from `GET /raids/:id`. | — | — |
 | `raid.remind` | Thread message mentioning `payload.discordIds`. For anyone the mention can't reach (left server), skip. | — | — |
+| `raid.reserves.remind` | Tell `payload.discordIds` they haven't picked both loot reserves; link to the raid page's Loot reserves section. Skip members the bot cannot reach. Payload: `{ raidId, discordIds: string[], reservesLockAt: ISO timestamp }`. Ordered with other jobs for this raid. | — | — |
 | `raid.lock` | Re-render as 🔒 Locked, post "Sign-ups are locked. Officers can still change answers on the web." in the thread. | — | — |
 | `raid.cancel` | Edit the message to the compact ❌ line with `payload.reason`, remove buttons, DM everyone who ACCEPTed, archive the thread. | — | — |
 | `raid.close` | Edit the message to the compact ✅ line with the attended count, remove buttons, archive the thread. | — | — |
@@ -280,9 +284,18 @@ Runs every 60 s, called by the bot. Each step is idempotent and bounded.
 4. **Lock.** `now ≥ locksAt` and status SCHEDULED → LOCKED, `lockedAt`, enqueue `raid.lock`.
 5. **Close.** `now ≥ startsAt + durationMin + 60min` and status LOCKED → DONE, enqueue
    `raid.close`. Attendance can still be entered afterwards.
-6. **Nudge.** Applications PENDING for > 24h with `nudgedAt null` → enqueue
+6. **Reserve reminder.** Only with `LOOT_ENABLED` on: posted SCHEDULED or LOCKED raids
+   whose template has at least one loot-table item, in the two hours before reserves lock
+   (`startsAt − 120 min`, independent of sign-up `locksAt`). Include the window's start,
+   exclude its end; never catch up after reserves lock. With `remindReservesAt null`,
+   conditionally set it and enqueue one `raid.reserves.remind` in the same transaction.
+   Recipients are ACCEPT or TENTATIVE signups with a character, regardless of standing,
+   missing HR or SR (officer-placed picks count for their holder). Compute ids at enqueue
+   time. If nobody is owed, mark done without a job. Overlapping ticks cannot enqueue twice.
+   Returned `reservesReminded` counts jobs enqueued, not empty evaluations.
+7. **Nudge.** Applications PENDING for > 24h with `nudgedAt null` → enqueue
    `application.nudge`, set `nudgedAt`.
-7. **Reconcile (once per hour).** For every raid and application with a thread id and
+8. **Reconcile (once per hour).** For every raid and application with a thread id and
    status that implies archived/locked, enqueue `*.update` (the bot's update handler also
    fixes archive/lock/tag state). Cheap insurance against drift.
 
