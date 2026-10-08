@@ -113,6 +113,12 @@ def viewer_line(result: dict[str, Any]) -> str:
     return f"You're set to **{words.get(response, str(response))}**, {where}."
 
 
+def reserves_reminder(mentions: str, reserves_lock_at: str, reserves_url: str) -> str:
+    """A thread reminder for members who still need both loot reserves."""
+    lock_time = _unix(reserves_lock_at)
+    return f"{mentions}\nYou haven't picked both loot reserves for this raid. Choose them before <t:{lock_time}:F>: {reserves_url}"
+
+
 def reserves_prompt(result: dict[str, Any]) -> str:
     """The optional reserve-picker line after an Accept or Tentative response."""
     viewer = result.get("viewer") or {}

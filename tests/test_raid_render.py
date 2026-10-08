@@ -61,6 +61,18 @@ def test_compact_lines_and_viewer_line():
     assert render.viewer_line({"viewer": {"standing": "ROSTER", "response": "absent"}}) == "You're set to **Decline**, on the roster."
 
 
+def test_reserves_reminder_mentions_members_with_the_lock_time_and_picker_link():
+    assert render.reserves_reminder(
+        "<@1> <@2>",
+        "2026-11-20T02:00:00.000Z",
+        "https://www.bureauguild.com/members/calendar/r1?reserves=1",
+    ) == (
+        "<@1> <@2>\nYou haven't picked both loot reserves for this raid. "
+        "Choose them before <t:1795140000:F>: "
+        "https://www.bureauguild.com/members/calendar/r1?reserves=1"
+    )
+
+
 def test_reserves_prompt_only_for_an_incomplete_open_loot_reservation():
     result = {
         "viewer": {
@@ -126,3 +138,73 @@ def test_reserves_prompt_is_sent_only_after_accept_or_tentative_not_bench_or_dec
     bench = _interaction()
     asyncio.run(cog.on_click(bench, "r1", "bench"))
     bench.followup.send.assert_awaited_once_with("You're set to **Accept**, on the roster.", ephemeral=True)
+
+
+def _reserve_reminder_cog():
+    cog = RaidsCog.__new__(RaidsCog)
+    cog.api = SimpleNamespace(raid=AsyncMock(return_value=RAID))
+    cog.config = SimpleNamespace(site_public_url="https://www.bureauguild.com")
+    return cog
+
+
+def test_reserve_reminder_sends_to_reachable_members_and_is_safe_to_repeat():
+    cog = _reserve_reminder_cog()
+    first = SimpleNamespace(mention="<@1>")
+    second = SimpleNamespace(mention="<@2>")
+    thread = SimpleNamespace(guild=object(), send=AsyncMock())
+    cog.thread_for = AsyncMock(return_value=thread)
+    cog.member_for = AsyncMock(side_effect=[first, second, first, second])
+    job = {
+        "payload": {
+            "raidId": "r1",
+            "discordIds": ["1", "2"],
+            "reservesLockAt": "2099-01-01T00:00:00.000Z",
+        }
+    }
+
+    asyncio.run(cog.job_reserves_remind(job))
+    asyncio.run(cog.job_reserves_remind(job))
+
+    assert thread.send.await_count == 2
+    content = (
+        "<@1> <@2>\nYou haven't picked both loot reserves for this raid. "
+        "Choose them before <t:4070908800:F>: "
+        "https://www.bureauguild.com/members/calendar/r1?reserves=1"
+    )
+    assert thread.send.await_args_list[0].args == (content,)
+    assert thread.send.await_args_list[0].kwargs["allowed_mentions"].users == [first, second]
+
+
+def test_reserve_reminder_skips_empty_or_past_lock_jobs():
+    cog = _reserve_reminder_cog()
+
+    asyncio.run(cog.job_reserves_remind({"payload": {"raidId": "r1", "discordIds": [], "reservesLockAt": "2026-11-20T02:00:00.000Z"}}))
+    asyncio.run(cog.job_reserves_remind({"payload": {"raidId": "r1", "discordIds": ["1"], "reservesLockAt": "2020-01-01T00:00:00.000Z"}}))
+
+    cog.api.raid.assert_not_awaited()
+
+
+def test_reserve_reminder_skips_unreachable_members_but_not_the_reachable_ones():
+    cog = _reserve_reminder_cog()
+    reachable = SimpleNamespace(mention="<@1>")
+    thread = SimpleNamespace(guild=object(), send=AsyncMock())
+    cog.thread_for = AsyncMock(return_value=thread)
+    cog.member_for = AsyncMock(side_effect=[reachable, None])
+
+    asyncio.run(
+        cog.job_reserves_remind(
+            {"payload": {"raidId": "r1", "discordIds": ["1", "missing"], "reservesLockAt": "2099-01-01T00:00:00.000Z"}}
+        )
+    )
+
+    assert thread.send.await_args.args[0].startswith("<@1>\n")
+    assert thread.send.await_args.kwargs["allowed_mentions"].users == [reachable]
+
+    thread.send.reset_mock()
+    cog.member_for = AsyncMock(return_value=None)
+    asyncio.run(
+        cog.job_reserves_remind(
+            {"payload": {"raidId": "r1", "discordIds": ["missing"], "reservesLockAt": "2099-01-01T00:00:00.000Z"}}
+        )
+    )
+    thread.send.assert_not_awaited()

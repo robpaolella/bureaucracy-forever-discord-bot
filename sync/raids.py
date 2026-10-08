@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 import discord
@@ -73,6 +74,7 @@ class RaidsCog(commands.Cog):
             ("raid.post", self.job_post),
             ("raid.update", self.job_update),
             ("raid.remind", self.job_remind),
+            ("raid.reserves.remind", self.job_reserves_remind),
             ("raid.lock", self.job_lock),
             ("raid.cancel", self.job_cancel),
             ("raid.close", self.job_close),
@@ -171,6 +173,30 @@ class RaidsCog(commands.Cog):
         hours = p.get("hours", 72)
         mentions = " ".join(m.mention for m in members)
         await thread.send(f"{mentions}\nThe raid is in about {hours} hours and you haven't answered yet. Accept, Tentative or Decline above, or on the web.", allowed_mentions=discord.AllowedMentions(users=members))
+
+    async def job_reserves_remind(self, job: Job) -> None:
+        p = job["payload"]
+        discord_ids = p.get("discordIds", [])
+        reserves_lock_at = str(p["reservesLockAt"])
+        if not discord_ids or datetime.fromisoformat(reserves_lock_at.replace("Z", "+00:00")).timestamp() <= datetime.now().timestamp():
+            return
+        raid = await self.api.raid(str(p["raidId"]))
+        thread = await self.thread_for(raid)
+        if thread is None:
+            raise RuntimeError("no thread to remind in")
+        members = []
+        for discord_id in discord_ids:
+            member = await self.member_for(thread.guild, discord_id)
+            if member is not None:
+                members.append(member)
+        if not members:
+            return
+        mentions = " ".join(member.mention for member in members)
+        reserves_url = f"{self.config.site_public_url}/members/calendar/{p['raidId']}?reserves=1"
+        await thread.send(
+            render.reserves_reminder(mentions, reserves_lock_at, reserves_url),
+            allowed_mentions=discord.AllowedMentions(users=members),
+        )
 
     async def job_lock(self, job: Job) -> None:
         raid = await self.api.raid(str(job["payload"]["raidId"]))

@@ -1,5 +1,8 @@
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+from sync.raids import RaidsCog
 from sync.runner import JobRunner
 
 
@@ -14,6 +17,14 @@ class FakeApi:
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_raid_cog_registers_reserve_reminder_handler():
+    runner = MagicMock()
+    cog = RaidsCog(MagicMock(), MagicMock(), SimpleNamespace(), runner)
+
+    handlers = {call.args[0]: call.args[1] for call in runner.handle.call_args_list}
+    assert handlers["raid.reserves.remind"] == cog.job_reserves_remind
 
 
 def test_jobs_run_in_order_per_entity_and_in_parallel_across_entities():
