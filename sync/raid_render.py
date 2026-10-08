@@ -111,3 +111,16 @@ def viewer_line(result: dict[str, Any]) -> str:
     words = {"accept": "Accept", "tentative": "Tentative", "absent": "Decline", None: "no answer"}
     where = "on the bench" if standing == "BENCH" else "on the roster"
     return f"You're set to **{words.get(response, str(response))}**, {where}."
+
+
+def reserves_prompt(result: dict[str, Any]) -> str:
+    """The optional reserve-picker line after an Accept or Tentative response."""
+    viewer = result.get("viewer") or {}
+    if (
+        viewer.get("response") in ("accept", "tentative")
+        and viewer.get("lootTable") is True
+        and viewer.get("reservesLocked") is False
+        and viewer.get("reservesComplete") is False
+    ):
+        return f"\nSelect your loot reserves for this raid: {viewer.get('reservesUrl')}"
+    return ""

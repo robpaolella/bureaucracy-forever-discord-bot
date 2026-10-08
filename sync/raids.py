@@ -271,4 +271,7 @@ class RaidsCog(commands.Cog):
         except ApiError as e:
             await interaction.followup.send(e.reason, ephemeral=True)
             return
-        await interaction.followup.send(render.viewer_line(result), ephemeral=True)
+        message = render.viewer_line(result)
+        if response in ("ACCEPT", "TENTATIVE"):
+            message += render.reserves_prompt(result)
+        await interaction.followup.send(message, ephemeral=True)
