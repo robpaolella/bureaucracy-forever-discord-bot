@@ -199,3 +199,12 @@ def test_reserve_reminder_skips_unreachable_members_but_not_the_reachable_ones()
 
     assert thread.send.await_args.args[0].startswith("<@1>\n")
     assert thread.send.await_args.kwargs["allowed_mentions"].users == [reachable]
+
+    thread.send.reset_mock()
+    cog.member_for = AsyncMock(return_value=None)
+    asyncio.run(
+        cog.job_reserves_remind(
+            {"payload": {"raidId": "r1", "discordIds": ["missing"], "reservesLockAt": "2099-01-01T00:00:00.000Z"}}
+        )
+    )
+    thread.send.assert_not_awaited()
