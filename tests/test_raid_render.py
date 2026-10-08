@@ -158,7 +158,7 @@ def test_reserve_reminder_sends_to_reachable_members_and_is_safe_to_repeat():
         "payload": {
             "raidId": "r1",
             "discordIds": ["1", "2"],
-            "reservesLockAt": "2026-11-20T02:00:00.000Z",
+            "reservesLockAt": "2099-01-01T00:00:00.000Z",
         }
     }
 
@@ -168,26 +168,34 @@ def test_reserve_reminder_sends_to_reachable_members_and_is_safe_to_repeat():
     assert thread.send.await_count == 2
     content = (
         "<@1> <@2>\nYou haven't picked both loot reserves for this raid. "
-        "Choose them before <t:1795140000:F>: "
+        "Choose them before <t:4070908800:F>: "
         "https://www.bureauguild.com/members/calendar/r1?reserves=1"
     )
     assert thread.send.await_args_list[0].args == (content,)
     assert thread.send.await_args_list[0].kwargs["allowed_mentions"].users == [first, second]
 
 
-def test_reserve_reminder_skips_empty_and_unreachable_recipient_lists():
+def test_reserve_reminder_skips_empty_or_past_lock_jobs():
     cog = _reserve_reminder_cog()
 
     asyncio.run(cog.job_reserves_remind({"payload": {"raidId": "r1", "discordIds": [], "reservesLockAt": "2026-11-20T02:00:00.000Z"}}))
+    asyncio.run(cog.job_reserves_remind({"payload": {"raidId": "r1", "discordIds": ["1"], "reservesLockAt": "2020-01-01T00:00:00.000Z"}}))
 
     cog.api.raid.assert_not_awaited()
+
+
+def test_reserve_reminder_skips_unreachable_members_but_not_the_reachable_ones():
+    cog = _reserve_reminder_cog()
+    reachable = SimpleNamespace(mention="<@1>")
     thread = SimpleNamespace(guild=object(), send=AsyncMock())
     cog.thread_for = AsyncMock(return_value=thread)
-    cog.member_for = AsyncMock(return_value=None)
+    cog.member_for = AsyncMock(side_effect=[reachable, None])
+
     asyncio.run(
         cog.job_reserves_remind(
-            {"payload": {"raidId": "r1", "discordIds": ["missing"], "reservesLockAt": "2026-11-20T02:00:00.000Z"}}
+            {"payload": {"raidId": "r1", "discordIds": ["1", "missing"], "reservesLockAt": "2099-01-01T00:00:00.000Z"}}
         )
     )
 
-    thread.send.assert_not_awaited()
+    assert thread.send.await_args.args[0].startswith("<@1>\n")
+    assert thread.send.await_args.kwargs["allowed_mentions"].users == [reachable]

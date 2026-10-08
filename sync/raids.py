@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 import discord
@@ -176,7 +177,8 @@ class RaidsCog(commands.Cog):
     async def job_reserves_remind(self, job: Job) -> None:
         p = job["payload"]
         discord_ids = p.get("discordIds", [])
-        if not discord_ids:
+        reserves_lock_at = str(p["reservesLockAt"])
+        if not discord_ids or datetime.fromisoformat(reserves_lock_at.replace("Z", "+00:00")).timestamp() <= datetime.now().timestamp():
             return
         raid = await self.api.raid(str(p["raidId"]))
         thread = await self.thread_for(raid)
@@ -192,7 +194,7 @@ class RaidsCog(commands.Cog):
         mentions = " ".join(member.mention for member in members)
         reserves_url = f"{self.config.site_public_url}/members/calendar/{p['raidId']}?reserves=1"
         await thread.send(
-            render.reserves_reminder(mentions, str(p["reservesLockAt"]), reserves_url),
+            render.reserves_reminder(mentions, reserves_lock_at, reserves_url),
             allowed_mentions=discord.AllowedMentions(users=members),
         )
 
