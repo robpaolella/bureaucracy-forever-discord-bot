@@ -1,6 +1,10 @@
+import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from sync import raid_render as render
+from sync.raids import RaidsCog
 
 RAID = {
     "id": "r1",
@@ -55,3 +59,70 @@ def test_compact_lines_and_viewer_line():
     assert render.compact_line({**RAID, "status": "CANCELLED"}) == "❌ Molten Core — Thu Nov 19 · cancelled: no reason given"
     assert render.viewer_line({"viewer": {"standing": "BENCH", "response": "accept"}}) == "You're set to **Accept**, on the bench."
     assert render.viewer_line({"viewer": {"standing": "ROSTER", "response": "absent"}}) == "You're set to **Decline**, on the roster."
+
+
+def test_reserves_prompt_only_for_an_incomplete_open_loot_reservation():
+    result = {
+        "viewer": {
+            "response": "accept",
+            "lootTable": True,
+            "reservesLocked": False,
+            "reservesComplete": False,
+            "reservesUrl": "https://www.bureauguild.com/members/calendar/r1?reserves=1",
+        }
+    }
+    assert render.reserves_prompt(result) == "\nSelect your loot reserves for this raid: https://www.bureauguild.com/members/calendar/r1?reserves=1"
+    assert render.reserves_prompt({**result, "viewer": {**result["viewer"], "response": "absent"}}) == ""
+    for field, value in (("lootTable", False), ("reservesLocked", True), ("reservesComplete", True)):
+        assert render.reserves_prompt({**result, "viewer": {**result["viewer"], field: value}}) == ""
+    assert render.reserves_prompt({"viewer": None}) == ""
+    assert render.reserves_prompt({"viewer": {"response": "accept"}}) == ""
+
+
+def _interaction():
+    return SimpleNamespace(
+        id=1,
+        user=SimpleNamespace(id=2),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+
+def test_reserves_prompt_is_sent_only_after_accept_or_tentative_not_bench_or_decline():
+    result = {
+        "viewer": {
+            "standing": "ROSTER",
+            "response": "accept",
+            "lootTable": True,
+            "reservesLocked": False,
+            "reservesComplete": False,
+            "reservesUrl": "https://www.bureauguild.com/members/calendar/r1?reserves=1",
+        }
+    }
+    cog = RaidsCog.__new__(RaidsCog)
+    cog.api = SimpleNamespace(respond=AsyncMock(return_value=result), bench=AsyncMock(return_value=result))
+
+    accept = _interaction()
+    asyncio.run(cog._respond_deferred(accept, "r1", "ACCEPT"))
+    accept.followup.send.assert_awaited_once_with(
+        "You're set to **Accept**, on the roster.\nSelect your loot reserves for this raid: https://www.bureauguild.com/members/calendar/r1?reserves=1",
+        ephemeral=True,
+    )
+
+    tentative = _interaction()
+    tentative_result = {**result, "viewer": {**result["viewer"], "response": "tentative"}}
+    cog.api.respond.return_value = tentative_result
+    asyncio.run(cog._respond_deferred(tentative, "r1", "TENTATIVE"))
+    tentative.followup.send.assert_awaited_once_with(
+        "You're set to **Tentative**, on the roster.\nSelect your loot reserves for this raid: https://www.bureauguild.com/members/calendar/r1?reserves=1",
+        ephemeral=True,
+    )
+
+    decline = _interaction()
+    cog.api.respond.return_value = {**result, "viewer": {**result["viewer"], "response": "absent"}}
+    asyncio.run(cog._respond_deferred(decline, "r1", "ABSENT"))
+    decline.followup.send.assert_awaited_once_with("You're set to **Decline**, on the roster.", ephemeral=True)
+
+    bench = _interaction()
+    asyncio.run(cog.on_click(bench, "r1", "bench"))
+    bench.followup.send.assert_awaited_once_with("You're set to **Accept**, on the roster.", ephemeral=True)
